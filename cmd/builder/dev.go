@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/signal"
 
+	"github.com/MobAI-App/ios-builder/internal/config"
 	"github.com/MobAI-App/ios-builder/internal/dev"
 	"github.com/MobAI-App/ios-builder/internal/mobai"
 	"github.com/spf13/cobra"
@@ -43,6 +44,15 @@ func runDevFlutter(cmd *cobra.Command, args []string) error {
 	ipaPath, _ := cmd.Flags().GetString("ipa")
 	skipInstall, _ := cmd.Flags().GetBool("skip-install")
 	bundleID, _ := cmd.Flags().GetString("bundle-id")
+
+	if cfg, err := config.NewManager().Load(); err == nil {
+		if !cmd.Flags().Changed("mobai-url") && cfg.MobAI.URL != "" {
+			mobaiURL = cfg.MobAI.URL
+		}
+		if !cmd.Flags().Changed("device") && cfg.MobAI.DeviceID != "" {
+			deviceID = cfg.MobAI.DeviceID
+		}
+	}
 
 	if skipInstall {
 		if bundleID == "" {
