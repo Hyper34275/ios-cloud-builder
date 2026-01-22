@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -88,7 +87,8 @@ func FindIPA(distDir string) (string, error) {
 }
 
 // EnsureCustomDevice ensures Flutter custom_devices.json has mobai-ios configured.
-func EnsureCustomDevice() error {
+// If mobaiURL is provided and we're on WSL, it will be included in the commands.
+func EnsureCustomDevice(mobaiURL string) error {
 	// Enable custom devices feature in Flutter
 	if err := exec.Command("flutter", "config", "--enable-custom-devices").Run(); err != nil {
 		return fmt.Errorf("failed to enable custom devices - run 'flutter config --enable-custom-devices' manually first: %w", err)
@@ -118,6 +118,12 @@ func EnsureCustomDevice() error {
 
 	configPath := filepath.Join(flutterDir, "custom_devices.json")
 
+	// Build commands - include --url flag on WSL so spawned processes know the MobAI host
+	pingCmd := []string{"builder", "mobai", "--url", mobaiURL, "ping"}
+	installCmd := []string{"builder", "mobai", "--url", mobaiURL, "install", "${localPath}"}
+	runDebugCmd := []string{"builder", "mobai", "--url", mobaiURL, "run-debug", "${appName}"}
+	forwardCmd := []string{"builder", "mobai", "--url", mobaiURL, "forward", "${devicePort}", "${hostPort}"}
+
 	config := map[string]any{
 		"custom-devices": []any{
 			map[string]any{
@@ -126,12 +132,12 @@ func EnsureCustomDevice() error {
 				"sdkNameAndVersion":       "iOS (via MobAI)",
 				"platform":                nil,
 				"enabled":                 true,
-				"ping":                    []string{"builder", "mobai", "ping"},
+				"ping":                    pingCmd,
 				"pingSuccessRegex":        "success",
-				"install":                 []string{"builder", "mobai", "install", "${localPath}"},
+				"install":                 installCmd,
 				"uninstall":               []string{"echo", "uninstall not supported"},
-				"runDebug":                []string{"builder", "mobai", "run-debug", "${appName}"},
-				"forwardPort":             []string{"builder", "mobai", "forward", "${devicePort}", "${hostPort}"},
+				"runDebug":                runDebugCmd,
+				"forwardPort":             forwardCmd,
 				"forwardPortSuccessRegex": "forwarded",
 			},
 		},
@@ -151,8 +157,7 @@ func EnsureCustomDevice() error {
 
 // Start runs the full dev session: install, launch, attach.
 func (s *Session) Start(ctx context.Context) error {
-	// Ensure custom device is configured
-	if err := EnsureCustomDevice(); err != nil {
+	if err := EnsureCustomDevice(s.mobaiURL); err != nil {
 		fmt.Printf("Warning: could not configure custom device: %v\n", err)
 	}
 
@@ -362,12 +367,6 @@ func (s *Session) waitWithDebugURL(ctx context.Context, debugURL string, outputC
 	fmt.Println()
 	fmt.Printf("VM Service URL (on device): %s\n", debugURL)
 
-	// In WSL, replace 127.0.0.1 with the MobAI host so Flutter can reach it
-	origURL := debugURL
-	debugURL = s.rewriteDebugURLForWSL(debugURL)
-	if debugURL != origURL {
-		fmt.Printf("Rewritten for WSL: %s\n", debugURL)
-	}
 	fmt.Println()
 
 	go func() {
@@ -425,19 +424,4 @@ func toWindowsPathIfWSL(path string) string {
 	}
 
 	return strings.TrimSpace(string(out))
-}
-
-// rewriteDebugURLForWSL replaces 127.0.0.1 in the debug URL with the MobAI host
-// so that Flutter running in WSL can reach the debug service on Windows.
-func (s *Session) rewriteDebugURLForWSL(debugURL string) string {
-	if !isWSL() {
-		return debugURL
-	}
-
-	mobaiParsed, err := url.Parse(s.mobaiURL)
-	if err != nil || mobaiParsed.Hostname() == "" || mobaiParsed.Hostname() == "localhost" || mobaiParsed.Hostname() == "127.0.0.1" {
-		return debugURL
-	}
-
-	return strings.Replace(debugURL, "127.0.0.1", mobaiParsed.Hostname(), 1)
 }

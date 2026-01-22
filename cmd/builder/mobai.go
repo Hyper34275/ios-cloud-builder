@@ -3,8 +3,13 @@ package main
 import (
 	"context"
 	"fmt"
+	"io"
+	"net"
+	"net/url"
 	"os"
+	"runtime"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/MobAI-App/ios-builder/internal/config"
@@ -189,8 +194,84 @@ func runMobaiForward(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("forward failed: %w", err)
 	}
 
+	// On WSL, start a TCP proxy to forward localhost -> Windows host
+	if isWSL() {
+		mobaiURL, _ := cmd.Flags().GetString("url")
+		if !cmd.Flags().Changed("url") {
+			if cfg, err := config.NewManager().Load(); err == nil && cfg.MobAI.URL != "" {
+				mobaiURL = cfg.MobAI.URL
+			}
+		}
+
+		windowsHost := extractHostFromURL(mobaiURL)
+		if windowsHost != "" && windowsHost != "localhost" && windowsHost != "127.0.0.1" {
+			listener, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", hostPort))
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "WSL proxy listen error: %v\n", err)
+			} else {
+				fmt.Fprintf(os.Stderr, "WSL proxy: 127.0.0.1:%d -> %s:%d\n", hostPort, windowsHost, hostPort)
+				fmt.Printf("forwarded %d -> %d\n", resp.DevicePort, resp.HostPort)
+				for {
+					conn, err := listener.Accept()
+					if err != nil {
+						fmt.Fprintf(os.Stderr, "WSL proxy accept error: %v\n", err)
+						continue
+					}
+					go handleProxyConnection(conn, windowsHost, hostPort)
+				}
+			}
+		}
+	}
+
 	fmt.Printf("forwarded %d -> %d\n", resp.DevicePort, resp.HostPort)
 
 	// Keep running to maintain the forward
 	select {}
+}
+
+func isWSL() bool {
+	if runtime.GOOS != "linux" {
+		return false
+	}
+	data, err := os.ReadFile("/proc/version")
+	if err != nil {
+		return false
+	}
+	lower := strings.ToLower(string(data))
+	return strings.Contains(lower, "microsoft") || strings.Contains(lower, "wsl")
+}
+
+func extractHostFromURL(urlStr string) string {
+	parsed, err := url.Parse(urlStr)
+	if err != nil {
+		return ""
+	}
+	return parsed.Hostname()
+}
+
+// handleProxyConnection handles a single proxied connection
+func handleProxyConnection(clientConn net.Conn, remoteHost string, remotePort int) {
+	defer clientConn.Close()
+
+	remoteAddr := fmt.Sprintf("%s:%d", remoteHost, remotePort)
+	remoteConn, err := net.DialTimeout("tcp4", remoteAddr, 10*time.Second)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "WSL proxy dial error: %v\n", err)
+		return
+	}
+	defer remoteConn.Close()
+
+	done := make(chan struct{}, 2)
+
+	go func() {
+		io.Copy(remoteConn, clientConn)
+		done <- struct{}{}
+	}()
+
+	go func() {
+		io.Copy(clientConn, remoteConn)
+		done <- struct{}{}
+	}()
+	// Wait for either direction to finish
+	<-done
 }
