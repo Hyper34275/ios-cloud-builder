@@ -1,5 +1,5 @@
 // Package auth provides GitHub OAuth authentication via Device Code flow.
-// Tokens are securely stored in the OS keychain using go-keyring.
+// Tokens are stored in the OS keychain (macOS/Windows) or file-based storage (Linux/WSL).
 package auth
 
 import (
@@ -9,6 +9,9 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"os"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 
@@ -20,6 +23,9 @@ const (
 
 	keyringService = "builder-cli"
 	keyringUser    = "github-token"
+
+	configDirName = "ios-builder"
+	tokenFileName = "token"
 )
 
 // Token represents a GitHub OAuth access token.
@@ -57,7 +63,7 @@ func Login(ctx context.Context) (*Token, error) {
 		return nil, err
 	}
 
-	if err := keyring.Set(keyringService, keyringUser, token.AccessToken); err != nil {
+	if err := storeToken(token.AccessToken); err != nil {
 		return nil, fmt.Errorf("failed to store token: %w", err)
 	}
 
@@ -67,23 +73,125 @@ func Login(ctx context.Context) (*Token, error) {
 // ErrNotAuthenticated indicates no stored authentication token was found.
 var ErrNotAuthenticated = errors.New("not authenticated")
 
-// GetToken retrieves the stored GitHub token from the OS keychain.
+// GetToken retrieves the stored GitHub token from the OS keychain or file storage.
 func GetToken() (string, error) {
 	token, err := keyring.Get(keyringService, keyringUser)
-	if err != nil {
-		if err == keyring.ErrNotFound {
+	if err == nil {
+		return token, nil
+	}
+	if err != keyring.ErrNotFound {
+		token, fileErr := getTokenFromFile()
+		if fileErr == nil {
+			return token, nil
+		}
+		if fileErr == ErrNotAuthenticated {
 			return "", ErrNotAuthenticated
 		}
-		return "", fmt.Errorf("failed to get token: %w", err)
+		return "", fmt.Errorf("failed to get token: %w", fileErr)
+	}
+	token, fileErr := getTokenFromFile()
+	if fileErr == nil {
+		return token, nil
+	}
+	return "", ErrNotAuthenticated
+}
+
+// Logout removes the stored GitHub token from keychain and file storage.
+func Logout() error {
+	keyringErr := keyring.Delete(keyringService, keyringUser)
+	if keyringErr != nil && keyringErr != keyring.ErrNotFound {
+		// Keyring failed, but we still want to try deleting the file
+	}
+	fileErr := deleteTokenFile()
+	if keyringErr != nil && keyringErr != keyring.ErrNotFound && fileErr != nil {
+		return fmt.Errorf("failed to delete token: keyring: %v, file: %v", keyringErr, fileErr)
+	}
+
+	return nil
+}
+
+// storeToken stores the token, preferring keyring but falling back to file on Linux/WSL.
+func storeToken(token string) error {
+	err := keyring.Set(keyringService, keyringUser, token)
+	if err == nil {
+		return nil
+	}
+
+	return storeTokenToFile(token)
+}
+
+// getConfigDir returns the path to ~/.config/ios-builder/
+func getConfigDir() (string, error) {
+	var configBase string
+	if runtime.GOOS == "windows" {
+		configBase = os.Getenv("APPDATA")
+		if configBase == "" {
+			home, err := os.UserHomeDir()
+			if err != nil {
+				return "", err
+			}
+			configBase = filepath.Join(home, "AppData", "Roaming")
+		}
+	} else {
+		configBase = os.Getenv("XDG_CONFIG_HOME")
+		if configBase == "" {
+			home, err := os.UserHomeDir()
+			if err != nil {
+				return "", err
+			}
+			configBase = filepath.Join(home, ".config")
+		}
+	}
+	return filepath.Join(configBase, configDirName), nil
+}
+
+// storeTokenToFile saves the token to ~/.config/ios-builder/token with restricted permissions.
+func storeTokenToFile(token string) error {
+	configDir, err := getConfigDir()
+	if err != nil {
+		return fmt.Errorf("failed to get config directory: %w", err)
+	}
+	if err := os.MkdirAll(configDir, 0700); err != nil {
+		return fmt.Errorf("failed to create config directory: %w", err)
+	}
+	tokenPath := filepath.Join(configDir, tokenFileName)
+	if err := os.WriteFile(tokenPath, []byte(token), 0600); err != nil {
+		return fmt.Errorf("failed to write token file: %w", err)
+	}
+	return nil
+}
+
+// getTokenFromFile reads the token from ~/.config/ios-builder/token.
+func getTokenFromFile() (string, error) {
+	configDir, err := getConfigDir()
+	if err != nil {
+		return "", fmt.Errorf("failed to get config directory: %w", err)
+	}
+	tokenPath := filepath.Join(configDir, tokenFileName)
+	data, err := os.ReadFile(tokenPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return "", ErrNotAuthenticated
+		}
+		return "", fmt.Errorf("failed to read token file: %w", err)
+	}
+	token := strings.TrimSpace(string(data))
+	if token == "" {
+		return "", ErrNotAuthenticated
 	}
 	return token, nil
 }
 
-// Logout removes the stored GitHub token from the OS keychain.
-func Logout() error {
-	err := keyring.Delete(keyringService, keyringUser)
-	if err != nil && err != keyring.ErrNotFound {
-		return fmt.Errorf("failed to delete token: %w", err)
+// deleteTokenFile removes the token file.
+func deleteTokenFile() error {
+	configDir, err := getConfigDir()
+	if err != nil {
+		return err
+	}
+	tokenPath := filepath.Join(configDir, tokenFileName)
+	err = os.Remove(tokenPath)
+	if err != nil && !os.IsNotExist(err) {
+		return err
 	}
 	return nil
 }
