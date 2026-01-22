@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -24,6 +25,7 @@ import (
 // Session manages a Flutter development session with MobAI.
 type Session struct {
 	mobai       *mobai.Client
+	mobaiURL    string
 	deviceID    string
 	ipaPath     string
 	bundleID    string
@@ -35,6 +37,7 @@ type Session struct {
 func NewSession(mobaiURL, deviceID, ipaPath string) *Session {
 	return &Session{
 		mobai:    mobai.NewClient(mobaiURL),
+		mobaiURL: mobaiURL,
 		deviceID: deviceID,
 		ipaPath:  ipaPath,
 	}
@@ -358,9 +361,15 @@ func (s *Session) launchAndFindDebugURL(ctx context.Context) (string, <-chan mob
 func (s *Session) waitWithDebugURL(ctx context.Context, debugURL string, outputChan <-chan mobai.DebugOutput) error {
 	fmt.Println()
 	fmt.Printf("VM Service URL (on device): %s\n", debugURL)
+
+	// In WSL, replace 127.0.0.1 with the MobAI host so Flutter can reach it
+	origURL := debugURL
+	debugURL = s.rewriteDebugURLForWSL(debugURL)
+	if debugURL != origURL {
+		fmt.Printf("Rewritten for WSL: %s\n", debugURL)
+	}
 	fmt.Println()
 
-	// Drain app logs in background
 	go func() {
 		for output := range outputChan {
 			if output.Type == "exit" {
@@ -369,7 +378,6 @@ func (s *Session) waitWithDebugURL(ctx context.Context, debugURL string, outputC
 		}
 	}()
 
-	// Run flutter attach with custom device
 	fmt.Println("Attaching Flutter debugger...")
 	fmt.Println()
 
@@ -381,7 +389,6 @@ func (s *Session) waitWithDebugURL(ctx context.Context, debugURL string, outputC
 
 	err := cmd.Run()
 	if err != nil {
-		// Return a wrapped error that indicates this is a runtime error, not a CLI error
 		return &RuntimeError{Err: err}
 	}
 	return nil
@@ -418,4 +425,19 @@ func toWindowsPathIfWSL(path string) string {
 	}
 
 	return strings.TrimSpace(string(out))
+}
+
+// rewriteDebugURLForWSL replaces 127.0.0.1 in the debug URL with the MobAI host
+// so that Flutter running in WSL can reach the debug service on Windows.
+func (s *Session) rewriteDebugURLForWSL(debugURL string) string {
+	if !isWSL() {
+		return debugURL
+	}
+
+	mobaiParsed, err := url.Parse(s.mobaiURL)
+	if err != nil || mobaiParsed.Hostname() == "" || mobaiParsed.Hostname() == "localhost" || mobaiParsed.Hostname() == "127.0.0.1" {
+		return debugURL
+	}
+
+	return strings.Replace(debugURL, "127.0.0.1", mobaiParsed.Hostname(), 1)
 }
