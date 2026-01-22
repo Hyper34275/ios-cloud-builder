@@ -98,15 +98,12 @@ func GetToken() (string, error) {
 
 // Logout removes the stored GitHub token from keychain and file storage.
 func Logout() error {
-	keyringErr := keyring.Delete(keyringService, keyringUser)
-	if keyringErr != nil && keyringErr != keyring.ErrNotFound {
-		// Keyring failed, but we still want to try deleting the file
+	if err := keyring.Delete(keyringService, keyringUser); err != nil && err != keyring.ErrNotFound {
+		fmt.Fprintf(os.Stderr, "Warning: failed to delete from keyring: %v\n", err)
 	}
-	fileErr := deleteTokenFile()
-	if keyringErr != nil && keyringErr != keyring.ErrNotFound && fileErr != nil {
-		return fmt.Errorf("failed to delete token: keyring: %v, file: %v", keyringErr, fileErr)
+	if err := deleteTokenFile(); err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: failed to delete token file: %v\n", err)
 	}
-
 	return nil
 }
 
