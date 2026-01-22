@@ -61,18 +61,11 @@ The CLI triggers the workflow and downloads the IPA to `./dist/`.
 
 ## Installation
 
-### Windows (WSL recommended)
+### Windows
 
-We recommend using [WSL](https://learn.microsoft.com/en-us/windows/wsl/install) for the best experience:
+Download `builder.exe` from [Releases](https://github.com/MobAI-App/ios-builder/releases) and add to PATH.
 
-```bash
-# Inside WSL
-curl -sSL https://raw.githubusercontent.com/MobAI-App/ios-builder/main/install.sh | bash
-```
-
-Or download `builder.exe` from [Releases](https://github.com/MobAI-App/ios-builder/releases) and add to PATH.
-
-### macOS/Linux
+### macOS/Linux/WSL
 
 ```bash
 curl -sSL https://raw.githubusercontent.com/MobAI-App/ios-builder/main/install.sh | bash
