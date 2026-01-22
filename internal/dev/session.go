@@ -232,6 +232,8 @@ func (s *Session) installApp(ctx context.Context) error {
 		return fmt.Errorf("get absolute path: %w", err)
 	}
 
+	absPath = toWindowsPathIfWSL(absPath)
+
 	req := mobai.InstallAppRequest{Path: absPath}
 
 	resignPrompt := promptui.Select{
@@ -387,4 +389,28 @@ type RuntimeError struct {
 
 func (e *RuntimeError) Error() string {
 	return e.Err.Error()
+}
+
+func isWSL() bool {
+	data, err := os.ReadFile("/proc/version")
+	if err != nil {
+		return false
+	}
+	lower := strings.ToLower(string(data))
+	return strings.Contains(lower, "microsoft") || strings.Contains(lower, "wsl")
+}
+
+// toWindowsPathIfWSL converts a WSL path to Windows path if running in WSL
+func toWindowsPathIfWSL(path string) string {
+	if !isWSL() {
+		return path
+	}
+
+	cmd := exec.Command("wslpath", "-w", path)
+	out, err := cmd.Output()
+	if err != nil {
+		return path
+	}
+
+	return strings.TrimSpace(string(out))
 }

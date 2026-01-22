@@ -140,17 +140,17 @@ builder signing setup         # Set up code signing secrets
 **WSL users**: MobAI runs on Windows, so you need to:
 
 1. In MobAI, go to **Integrations → API server** and enable **Allow external connections**
-2. Point to your Windows host IP in `builder.json`:
+2. Get your Windows hostname and use it with `.local` suffix:
 
 ```bash
-# Get Windows host IP from WSL
-cat /etc/resolv.conf | grep nameserver | awk '{print $2}'
+# Get Windows hostname from WSL
+hostname.exe
 ```
 
 ```json
 {
   "mobai": {
-    "url": "http://x.x.x.x:8686"
+    "url": "http://YOUR-PC-NAME.local:8686"
   }
 }
 ```
