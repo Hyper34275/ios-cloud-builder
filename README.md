@@ -150,7 +150,7 @@ cat /etc/resolv.conf | grep nameserver | awk '{print $2}'
 ```json
 {
   "mobai": {
-    "url": "http://172.x.x.x:8686"
+    "url": "http://x.x.x.x:8686"
   }
 }
 ```
