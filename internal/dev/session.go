@@ -86,6 +86,11 @@ func FindIPA(distDir string) (string, error) {
 
 // EnsureCustomDevice ensures Flutter custom_devices.json has mobai-ios configured.
 func EnsureCustomDevice() error {
+	// Enable custom devices feature in Flutter
+	if err := exec.Command("flutter", "config", "--enable-custom-devices").Run(); err != nil {
+		return fmt.Errorf("failed to enable custom devices - run 'flutter config --enable-custom-devices' manually first: %w", err)
+	}
+
 	homeDir, err := os.UserHomeDir()
 	if err != nil {
 		return fmt.Errorf("get home dir: %w", err)

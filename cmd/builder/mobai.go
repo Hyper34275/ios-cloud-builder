@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/MobAI-App/ios-builder/internal/config"
 	"github.com/MobAI-App/ios-builder/internal/mobai"
 	"github.com/spf13/cobra"
 )
@@ -55,6 +56,14 @@ func init() {
 
 func getMobaiClient(cmd *cobra.Command) *mobai.Client {
 	url, _ := cmd.Flags().GetString("url")
+
+	// Use config if flag not explicitly set
+	if !cmd.Flags().Changed("url") {
+		if cfg, err := config.NewManager().Load(); err == nil && cfg.MobAI.URL != "" {
+			url = cfg.MobAI.URL
+		}
+	}
+
 	return mobai.NewClient(url)
 }
 
@@ -67,6 +76,11 @@ func getDeviceID(cmd *cobra.Command, client *mobai.Client) (string, error) {
 	// Check environment variable (set by builder dev flutter)
 	if envID := os.Getenv("MOBAI_DEVICE_ID"); envID != "" {
 		return envID, nil
+	}
+
+	// Check config
+	if cfg, err := config.NewManager().Load(); err == nil && cfg.MobAI.DeviceID != "" {
+		return cfg.MobAI.DeviceID, nil
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
