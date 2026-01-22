@@ -43,10 +43,6 @@ formatters:
 issues:
   max-issues-per-linter: 0
   max-same-issues: 0
-  exclude-rules:
-    - linters:
-        - errcheck
-      source: "defer"
 
 run:
   timeout: 5m
