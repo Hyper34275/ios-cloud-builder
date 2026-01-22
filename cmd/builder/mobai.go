@@ -251,7 +251,7 @@ func extractHostFromURL(urlStr string) string {
 
 // handleProxyConnection handles a single proxied connection
 func handleProxyConnection(clientConn net.Conn, remoteHost string, remotePort int) {
-	defer clientConn.Close()
+	defer func() { _ = clientConn.Close() }()
 
 	remoteAddr := fmt.Sprintf("%s:%d", remoteHost, remotePort)
 	remoteConn, err := net.DialTimeout("tcp4", remoteAddr, 10*time.Second)
@@ -259,7 +259,7 @@ func handleProxyConnection(clientConn net.Conn, remoteHost string, remotePort in
 		fmt.Fprintf(os.Stderr, "WSL proxy dial error: %v\n", err)
 		return
 	}
-	defer remoteConn.Close()
+	defer func() { _ = remoteConn.Close() }()
 
 	done := make(chan struct{}, 2)
 
