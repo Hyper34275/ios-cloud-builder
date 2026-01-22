@@ -137,7 +137,10 @@ builder signing setup         # Set up code signing secrets
 | `mobai.url` | MobAI API URL | `http://localhost:8686` |
 | `mobai.device_id` | Preferred device ID (uses first available if empty) | `""` |
 
-**WSL users**: MobAI runs on Windows, so you need to point to your Windows host IP:
+**WSL users**: MobAI runs on Windows, so you need to:
+
+1. In MobAI, go to **Integrations → API server** and enable **Allow external connections**
+2. Point to your Windows host IP in `builder.json`:
 
 ```json
 {
