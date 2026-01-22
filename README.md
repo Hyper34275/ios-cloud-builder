@@ -122,6 +122,42 @@ builder signing setup         # Set up code signing secrets
     "path": "ios",
     "scheme": "",
     "signing": true
+  },
+  "mobai": {
+    "url": "http://localhost:8686",
+    "device_id": ""
+  }
+}
+```
+
+### MobAI Configuration
+
+| Field | Description | Default |
+|-------|-------------|---------|
+| `mobai.url` | MobAI API URL | `http://localhost:8686` |
+| `mobai.device_id` | Preferred device ID (uses first available if empty) | `""` |
+
+**WSL users**: MobAI runs on Windows, so you need to point to your Windows host IP:
+
+```json
+{
+  "mobai": {
+    "url": "http://$(hostname).local:8686"
+  }
+}
+```
+
+Or find your Windows host IP and use it directly:
+
+```bash
+# Get Windows host IP from WSL
+cat /etc/resolv.conf | grep nameserver | awk '{print $2}'
+```
+
+```json
+{
+  "mobai": {
+    "url": "http://172.x.x.x:8686"
   }
 }
 ```
