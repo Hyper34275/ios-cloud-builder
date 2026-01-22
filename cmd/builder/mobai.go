@@ -253,7 +253,7 @@ func extractHostFromURL(urlStr string) string {
 func handleProxyConnection(clientConn net.Conn, remoteHost string, remotePort int) {
 	defer func() { _ = clientConn.Close() }()
 
-	remoteAddr := fmt.Sprintf("%s:%d", remoteHost, remotePort)
+	remoteAddr := net.JoinHostPort(remoteHost, fmt.Sprintf("%d", remotePort))
 	remoteConn, err := net.DialTimeout("tcp4", remoteAddr, 10*time.Second)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "WSL proxy dial error: %v\n", err)
