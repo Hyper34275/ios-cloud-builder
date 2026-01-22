@@ -70,9 +70,9 @@ func (c *Client) request(ctx context.Context, method, path string, body any) (*h
 	return resp, nil
 }
 
-// do performs a request and decodes the response into result
-func (c *Client) do(ctx context.Context, method, path string, body, result any) error {
-	resp, err := c.request(ctx, method, path, body)
+// do performs a GET request and decodes the response into result
+func (c *Client) do(ctx context.Context, path string, result any) error {
+	resp, err := c.request(ctx, "GET", path, nil)
 	if err != nil {
 		return err
 	}

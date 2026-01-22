@@ -135,7 +135,7 @@ func runMobaiRunDebug(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("debug failed: %w", err)
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 
 	// Stream output and print VM service URL when found
 	for output := range outputChan {

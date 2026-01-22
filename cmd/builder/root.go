@@ -35,7 +35,7 @@ func initConfig() {
 	viper.AddConfigPath(".")
 	viper.AutomaticEnv()
 	// Ignore error: config file is optional
-	viper.ReadInConfig()
+	_ = viper.ReadInConfig()
 }
 
 func getGitHubClient() (*github.Client, error) {

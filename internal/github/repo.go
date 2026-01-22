@@ -11,7 +11,7 @@ func (c *Client) GetRepository(ctx context.Context, owner, repo string) (*Reposi
 	path := fmt.Sprintf("/repos/%s/%s", owner, repo)
 
 	var repository Repository
-	if err := c.do(ctx, "GET", path, nil, &repository); err != nil {
+	if err := c.do(ctx, path, &repository); err != nil {
 		return nil, fmt.Errorf("failed to get repository: %w", err)
 	}
 
@@ -23,7 +23,7 @@ func (c *Client) GetPublicKey(ctx context.Context, owner, repo string) (*PublicK
 	path := fmt.Sprintf("/repos/%s/%s/actions/secrets/public-key", owner, repo)
 
 	var key PublicKey
-	if err := c.do(ctx, "GET", path, nil, &key); err != nil {
+	if err := c.do(ctx, path, &key); err != nil {
 		return nil, fmt.Errorf("failed to get public key: %w", err)
 	}
 

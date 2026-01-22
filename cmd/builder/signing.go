@@ -120,9 +120,9 @@ func runSigningSetup(cmd *cobra.Command, args []string) error {
 
 	// Encrypt and upload secrets
 	secrets := map[string]string{
-		"IOS_CERTIFICATE":            certBase64,
-		"IOS_CERTIFICATE_PASSWORD":   password,
-		"IOS_PROVISIONING_PROFILE":   profileBase64,
+		"IOS_CERTIFICATE":          certBase64,
+		"IOS_CERTIFICATE_PASSWORD": password,
+		"IOS_PROVISIONING_PROFILE": profileBase64,
 	}
 
 	for name, value := range secrets {

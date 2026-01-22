@@ -195,26 +195,34 @@ func extractIPAFromZip(zipData []byte, destPath string) (int64, error) {
 
 	for _, f := range reader.File {
 		if filepath.Ext(f.Name) == ".ipa" {
-			rc, err := f.Open()
+			size, err := extractFile(f, destPath)
 			if err != nil {
-				return 0, fmt.Errorf("failed to open IPA in zip: %w", err)
+				return 0, err
 			}
-			defer rc.Close()
-
-			out, err := os.Create(destPath)
-			if err != nil {
-				return 0, fmt.Errorf("failed to create output file: %w", err)
-			}
-			defer out.Close()
-
-			size, err := io.Copy(out, rc)
-			if err != nil {
-				return 0, fmt.Errorf("failed to write IPA: %w", err)
-			}
-
 			return size, nil
 		}
 	}
 
 	return 0, fmt.Errorf("no IPA file found in artifact")
+}
+
+func extractFile(f *zip.File, destPath string) (int64, error) {
+	rc, err := f.Open()
+	if err != nil {
+		return 0, fmt.Errorf("failed to open IPA in zip: %w", err)
+	}
+	defer func() { _ = rc.Close() }()
+
+	out, err := os.Create(destPath)
+	if err != nil {
+		return 0, fmt.Errorf("failed to create output file: %w", err)
+	}
+	defer func() { _ = out.Close() }()
+
+	size, err := io.Copy(out, rc)
+	if err != nil {
+		return 0, fmt.Errorf("failed to write IPA: %w", err)
+	}
+
+	return size, nil
 }

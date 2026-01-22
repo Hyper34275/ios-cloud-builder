@@ -51,7 +51,7 @@ func (c *Client) GetWorkflowRun(ctx context.Context, owner, repo string, runID i
 	path := fmt.Sprintf("/repos/%s/%s/actions/runs/%d", owner, repo, runID)
 
 	var run WorkflowRun
-	if err := c.do(ctx, "GET", path, nil, &run); err != nil {
+	if err := c.do(ctx, path, &run); err != nil {
 		return nil, fmt.Errorf("failed to get workflow run: %w", err)
 	}
 
@@ -63,7 +63,7 @@ func (c *Client) ListWorkflowRuns(ctx context.Context, owner, repo, workflowFile
 	path := fmt.Sprintf("/repos/%s/%s/actions/workflows/%s/runs?per_page=10", owner, repo, workflowFile)
 
 	var resp WorkflowRunsResponse
-	if err := c.do(ctx, "GET", path, nil, &resp); err != nil {
+	if err := c.do(ctx, path, &resp); err != nil {
 		return nil, fmt.Errorf("failed to list workflow runs: %w", err)
 	}
 
@@ -77,9 +77,9 @@ func (c *Client) FindLatestWorkflowRun(ctx context.Context, owner, repo, workflo
 		return nil, err
 	}
 
-	for _, run := range runs {
-		if run.CreatedAt.After(after) {
-			return &run, nil
+	for i := range runs {
+		if runs[i].CreatedAt.After(after) {
+			return &runs[i], nil
 		}
 	}
 
@@ -113,7 +113,7 @@ func (c *Client) ListRunArtifacts(ctx context.Context, owner, repo string, runID
 	path := fmt.Sprintf("/repos/%s/%s/actions/runs/%d/artifacts", owner, repo, runID)
 
 	var resp ArtifactsResponse
-	if err := c.do(ctx, "GET", path, nil, &resp); err != nil {
+	if err := c.do(ctx, path, &resp); err != nil {
 		return nil, fmt.Errorf("failed to list artifacts: %w", err)
 	}
 

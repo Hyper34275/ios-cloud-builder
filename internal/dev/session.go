@@ -113,18 +113,18 @@ func EnsureCustomDevice() error {
 	config := map[string]any{
 		"custom-devices": []any{
 			map[string]any{
-				"id":                       "mobai-ios",
-				"label":                    "MobAI iOS Device",
-				"sdkNameAndVersion":        "iOS (via MobAI)",
-				"platform":                 nil,
-				"enabled":                  true,
-				"ping":                     []string{"builder", "mobai", "ping"},
-				"pingSuccessRegex":         "success",
-				"install":                  []string{"builder", "mobai", "install", "${localPath}"},
-				"uninstall":                []string{"echo", "uninstall not supported"},
-				"runDebug":                 []string{"builder", "mobai", "run-debug", "${appName}"},
-				"forwardPort":              []string{"builder", "mobai", "forward", "${devicePort}", "${hostPort}"},
-				"forwardPortSuccessRegex":  "forwarded",
+				"id":                      "mobai-ios",
+				"label":                   "MobAI iOS Device",
+				"sdkNameAndVersion":       "iOS (via MobAI)",
+				"platform":                nil,
+				"enabled":                 true,
+				"ping":                    []string{"builder", "mobai", "ping"},
+				"pingSuccessRegex":        "success",
+				"install":                 []string{"builder", "mobai", "install", "${localPath}"},
+				"uninstall":               []string{"echo", "uninstall not supported"},
+				"runDebug":                []string{"builder", "mobai", "run-debug", "${appName}"},
+				"forwardPort":             []string{"builder", "mobai", "forward", "${devicePort}", "${hostPort}"},
+				"forwardPortSuccessRegex": "forwarded",
 			},
 		},
 	}
@@ -168,7 +168,7 @@ func (s *Session) Start(ctx context.Context) error {
 // Stop cleans up resources.
 func (s *Session) Stop() {
 	if s.debugConn != nil {
-		s.debugConn.Close()
+		_ = s.debugConn.Close()
 	}
 }
 
@@ -284,7 +284,7 @@ func extractBundleIDFromIPA(ipaPath string) string {
 	if err != nil {
 		return ""
 	}
-	defer r.Close()
+	defer func() { _ = r.Close() }()
 
 	for _, f := range r.File {
 		if strings.HasPrefix(f.Name, "Payload/") && strings.HasSuffix(f.Name, ".app/Info.plist") {
