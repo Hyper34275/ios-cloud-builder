@@ -89,40 +89,40 @@ func FindIPA(distDir string) (string, error) {
 // EnsureCustomDevice ensures Flutter custom_devices.json has mobai-ios configured.
 // If mobaiURL is provided and we're on WSL, it will be included in the commands.
 func EnsureCustomDevice(mobaiURL string) error {
-	// Enable custom devices feature in Flutter
 	if err := exec.Command("flutter", "config", "--enable-custom-devices").Run(); err != nil {
 		return fmt.Errorf("failed to enable custom devices - run 'flutter config --enable-custom-devices' manually first: %w", err)
 	}
 
-	homeDir, err := os.UserHomeDir()
-	if err != nil {
-		return fmt.Errorf("get home dir: %w", err)
-	}
-
-	// Flutter config directory varies by platform
-	var flutterDir string
+	var configPath string
 	if runtime.GOOS == "windows" {
-		// On Windows, Flutter uses %LOCALAPPDATA%\flutter
-		localAppData := os.Getenv("LOCALAPPDATA")
-		if localAppData == "" {
-			localAppData = filepath.Join(homeDir, "AppData", "Local")
+		// Windows: %APPDATA%\.flutter_custom_devices.json
+		appData := os.Getenv("APPDATA")
+		if appData == "" {
+			return fmt.Errorf("APPDATA environment variable not set")
 		}
-		flutterDir = filepath.Join(localAppData, "flutter")
+		configPath = filepath.Join(appData, ".flutter_custom_devices.json")
 	} else {
-		// On macOS/Linux, Flutter uses ~/.config/flutter
-		flutterDir = filepath.Join(homeDir, ".config", "flutter")
-	}
-	if err := os.MkdirAll(flutterDir, 0755); err != nil {
-		return fmt.Errorf("create flutter config dir: %w", err)
+		// Linux/macOS: ~/.config/flutter/custom_devices.json
+		homeDir, err := os.UserHomeDir()
+		if err != nil {
+			return fmt.Errorf("get home dir: %w", err)
+		}
+		flutterDir := filepath.Join(homeDir, ".config", "flutter")
+		if err := os.MkdirAll(flutterDir, 0755); err != nil {
+			return fmt.Errorf("create flutter config dir: %w", err)
+		}
+		configPath = filepath.Join(flutterDir, "custom_devices.json")
 	}
 
-	configPath := filepath.Join(flutterDir, "custom_devices.json")
+	execPath, err := os.Executable()
+	if err != nil {
+		return fmt.Errorf("get executable path: %w", err)
+	}
 
-	// Build commands - include --url flag on WSL so spawned processes know the MobAI host
-	pingCmd := []string{"builder", "mobai", "--url", mobaiURL, "ping"}
-	installCmd := []string{"builder", "mobai", "--url", mobaiURL, "install", "${localPath}"}
-	runDebugCmd := []string{"builder", "mobai", "--url", mobaiURL, "run-debug", "${appName}"}
-	forwardCmd := []string{"builder", "mobai", "--url", mobaiURL, "forward", "${devicePort}", "${hostPort}"}
+	pingCmd := []string{execPath, "mobai", "--url", mobaiURL, "ping"}
+	installCmd := []string{execPath, "mobai", "--url", mobaiURL, "install", "${localPath}"}
+	runDebugCmd := []string{execPath, "mobai", "--url", mobaiURL, "run-debug", "${appName}"}
+	forwardCmd := []string{execPath, "mobai", "--url", mobaiURL, "forward", "${devicePort}", "${hostPort}"}
 
 	config := map[string]any{
 		"custom-devices": []any{
