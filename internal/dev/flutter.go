@@ -17,11 +17,12 @@ import (
 // FlutterHandler implements FrameworkHandler for Flutter projects.
 type FlutterHandler struct {
 	mobaiURL string
+	noAttach bool
 }
 
 // NewFlutterHandler creates a new Flutter handler.
-func NewFlutterHandler(mobaiURL string) *FlutterHandler {
-	return &FlutterHandler{mobaiURL: mobaiURL}
+func NewFlutterHandler(mobaiURL string, noAttach bool) *FlutterHandler {
+	return &FlutterHandler{mobaiURL: mobaiURL, noAttach: noAttach}
 }
 
 // Setup configures Flutter custom device for MobAI.
@@ -30,7 +31,7 @@ func (h *FlutterHandler) Setup(ctx context.Context) error {
 }
 
 // Attach finds the VM Service URL and runs flutter attach.
-func (h *FlutterHandler) Attach(ctx context.Context, _ *mobai.Client, deviceID string, debugOutput <-chan mobai.DebugOutput) error {
+func (h *FlutterHandler) Attach(ctx context.Context, deviceID string, debugOutput <-chan mobai.DebugOutput) error {
 	fmt.Println("Waiting for debug service...")
 
 	debugURL, outputChan, err := h.findDebugURL(ctx, debugOutput)
@@ -85,6 +86,14 @@ func (h *FlutterHandler) runFlutterAttach(ctx context.Context, deviceID, debugUR
 			}
 		}
 	}()
+
+	if h.noAttach {
+		fmt.Println("Run this command to attach Flutter debugger:")
+		fmt.Println()
+		fmt.Printf("  MOBAI_DEVICE_ID=%s flutter attach -d mobai-ios --debug-url=%s\n", deviceID, debugURL)
+		fmt.Println()
+		return nil
+	}
 
 	fmt.Println("Attaching Flutter debugger...")
 	fmt.Println()

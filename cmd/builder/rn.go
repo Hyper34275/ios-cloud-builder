@@ -75,8 +75,7 @@ func runDevReactNative(cmd *cobra.Command, args []string) error {
 		fmt.Println()
 	}
 
-	handler := dev.NewReactNativeHandler(metroPort, showLogs)
-
+	handler := dev.NewReactNativeHandler(metroPort, showLogs, mobaiURL)
 	session := dev.NewSession(mobaiURL, deviceID, ipaPath, handler)
 	session.SetSkipInstall(skipInstall, bundleID)
 

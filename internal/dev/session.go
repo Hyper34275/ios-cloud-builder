@@ -24,7 +24,7 @@ type FrameworkHandler interface {
 	// DebugConfig returns environment variables and arguments for app launch
 	DebugConfig() *mobai.DebugConfig
 	// Attach runs after app launch to enable hot reload
-	Attach(ctx context.Context, client *mobai.Client, deviceID string, debugOutput <-chan mobai.DebugOutput) error
+	Attach(ctx context.Context, deviceID string, debugOutput <-chan mobai.DebugOutput) error
 	// Stop cleans up resources
 	Stop()
 }
@@ -121,10 +121,9 @@ func (s *Session) Start(ctx context.Context) error {
 	}
 
 	if s.handler != nil {
-		return s.handler.Attach(ctx, s.mobai, s.deviceID, debugOutput)
+		return s.handler.Attach(ctx, s.deviceID, debugOutput)
 	}
 
-	// No handler, just drain output
 	for range debugOutput {
 	}
 	return nil

@@ -36,6 +36,7 @@ func init() {
 	devFlutterCmd.Flags().String("ipa", "", "Path to IPA (default: auto-detect from dist/)")
 	devFlutterCmd.Flags().Bool("skip-install", false, "Skip app installation (app must already be installed)")
 	devFlutterCmd.Flags().String("bundle-id", "", "Bundle ID (required with --skip-install)")
+	devFlutterCmd.Flags().Bool("no-attach", false, "Print flutter attach command instead of running it")
 }
 
 func runDevFlutter(cmd *cobra.Command, args []string) error {
@@ -53,6 +54,8 @@ func runDevFlutter(cmd *cobra.Command, args []string) error {
 			deviceID = cfg.MobAI.DeviceID
 		}
 	}
+
+	noAttach, _ := cmd.Flags().GetBool("no-attach")
 
 	if skipInstall {
 		if bundleID == "" {
@@ -75,7 +78,7 @@ func runDevFlutter(cmd *cobra.Command, args []string) error {
 		fmt.Println()
 	}
 
-	handler := dev.NewFlutterHandler(mobaiURL)
+	handler := dev.NewFlutterHandler(mobaiURL, noAttach)
 	session := dev.NewSession(mobaiURL, deviceID, ipaPath, handler)
 	session.SetSkipInstall(skipInstall, bundleID)
 
