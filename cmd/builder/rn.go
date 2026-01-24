@@ -12,38 +12,38 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var devCmd = &cobra.Command{
-	Use:   "dev",
-	Short: "Development commands",
-}
-
-var devFlutterCmd = &cobra.Command{
-	Use:   "flutter",
-	Short: "Start Flutter hot reload session",
-	Long: `Starts a Flutter hot reload session using MobAI.
+var devReactNativeCmd = &cobra.Command{
+	Use:     "react-native",
+	Aliases: []string{"rn"},
+	Short:   "Start React Native hot reload session",
+	Long: `Starts a React Native hot reload session using MobAI.
 
 Prerequisites:
 - MobAI running with an iOS device connected
 - IPA built with 'builder ios build' (must be a debug build)
-- Flutter SDK installed`,
-	RunE: runDevFlutter,
+- Node.js and React Native CLI installed`,
+	RunE: runDevReactNative,
 }
 
 func init() {
-	devCmd.AddCommand(devFlutterCmd)
-	devFlutterCmd.Flags().StringP("device", "d", "", "Device ID (default: first available)")
-	devFlutterCmd.Flags().String("mobai-url", mobai.DefaultBaseURL, "MobAI API URL")
-	devFlutterCmd.Flags().String("ipa", "", "Path to IPA (default: auto-detect from dist/)")
-	devFlutterCmd.Flags().Bool("skip-install", false, "Skip app installation (app must already be installed)")
-	devFlutterCmd.Flags().String("bundle-id", "", "Bundle ID (required with --skip-install)")
+	devCmd.AddCommand(devReactNativeCmd)
+	devReactNativeCmd.Flags().StringP("device", "d", "", "Device ID (default: first available)")
+	devReactNativeCmd.Flags().String("mobai-url", mobai.DefaultBaseURL, "MobAI API URL")
+	devReactNativeCmd.Flags().String("ipa", "", "Path to IPA (default: auto-detect from dist/)")
+	devReactNativeCmd.Flags().Bool("skip-install", false, "Skip app installation (app must already be installed)")
+	devReactNativeCmd.Flags().String("bundle-id", "", "Bundle ID (required with --skip-install)")
+	devReactNativeCmd.Flags().Int("metro-port", 8081, "Metro bundler port")
+	devReactNativeCmd.Flags().Bool("logs", false, "Show app logs")
 }
 
-func runDevFlutter(cmd *cobra.Command, args []string) error {
+func runDevReactNative(cmd *cobra.Command, args []string) error {
 	deviceID, _ := cmd.Flags().GetString("device")
 	mobaiURL, _ := cmd.Flags().GetString("mobai-url")
 	ipaPath, _ := cmd.Flags().GetString("ipa")
 	skipInstall, _ := cmd.Flags().GetBool("skip-install")
 	bundleID, _ := cmd.Flags().GetString("bundle-id")
+	metroPort, _ := cmd.Flags().GetInt("metro-port")
+	showLogs, _ := cmd.Flags().GetBool("logs")
 
 	if cfg, err := config.NewManager().Load(); err == nil {
 		if !cmd.Flags().Changed("mobai-url") && cfg.MobAI.URL != "" {
@@ -63,13 +63,11 @@ func runDevFlutter(cmd *cobra.Command, args []string) error {
 			var err error
 			ipaPath, err = dev.FindIPA("dist")
 			if err != nil {
-				cmd.SilenceUsage = true
 				return err
 			}
 		}
 
 		if _, err := os.Stat(ipaPath); os.IsNotExist(err) {
-			cmd.SilenceUsage = true
 			return fmt.Errorf("IPA not found: %s", ipaPath)
 		}
 
@@ -77,7 +75,9 @@ func runDevFlutter(cmd *cobra.Command, args []string) error {
 		fmt.Println()
 	}
 
-	session := dev.NewSession(mobaiURL, deviceID, ipaPath)
+	handler := dev.NewReactNativeHandler(metroPort, showLogs)
+
+	session := dev.NewSession(mobaiURL, deviceID, ipaPath, handler)
 	session.SetSkipInstall(skipInstall, bundleID)
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -96,16 +96,12 @@ func runDevFlutter(cmd *cobra.Command, args []string) error {
 	err := session.Start(ctx)
 	session.Stop()
 
-	if err != nil {
-		cmd.SilenceUsage = true
-		// Check if it's a runtime error and give helpful message
-		if _, ok := err.(*dev.RuntimeError); ok {
-			fmt.Println()
-			fmt.Println("Tip: If connection failed, try:")
-			fmt.Println("  1. Reconnect the device (unplug/replug)")
-			fmt.Println("  2. Restart MobAI")
-			fmt.Println("  3. Run 'builder mobai ping' to verify connection")
-		}
+	if _, ok := err.(*dev.RuntimeError); ok {
+		fmt.Println()
+		fmt.Println("Tip: If connection failed, try:")
+		fmt.Println("  1. Reconnect the device (unplug/replug)")
+		fmt.Println("  2. Restart MobAI")
+		fmt.Println("  3. Run 'builder mobai ping' to verify connection")
 	}
 
 	return err

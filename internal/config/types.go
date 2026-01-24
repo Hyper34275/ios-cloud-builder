@@ -2,17 +2,24 @@ package config
 
 // Config represents the builder.json configuration file
 type Config struct {
-	Project  string        `json:"project"`
-	Platform string        `json:"platform"`
-	GitHub   GitHubConfig  `json:"github"`
-	IOS      IOSConfig     `json:"ios,omitempty"`
-	Flutter  FlutterConfig `json:"flutter,omitempty"`
-	MobAI    MobAIConfig   `json:"mobai,omitempty"`
+	Project     string            `json:"project"`
+	Platform    string            `json:"platform"`
+	GitHub      GitHubConfig      `json:"github"`
+	IOS         IOSConfig         `json:"ios,omitempty"`
+	Flutter     FlutterConfig     `json:"flutter,omitempty"`
+	ReactNative ReactNativeConfig `json:"reactNative,omitempty"`
+	MobAI       MobAIConfig       `json:"mobai,omitempty"`
 }
 
 // FlutterConfig holds Flutter-specific settings
 type FlutterConfig struct {
 	Version string `json:"version,omitempty"` // Pinned Flutter version (e.g., "3.24.0")
+}
+
+// ReactNativeConfig holds React Native-specific settings
+type ReactNativeConfig struct {
+	MetroPort int  `json:"metroPort,omitempty"` // Metro bundler port (default: 8081)
+	Expo      bool `json:"expo,omitempty"`      // Whether this is an Expo project
 }
 
 // IOSConfig holds iOS build settings

@@ -150,7 +150,7 @@ func runMobaiRunDebug(cmd *cobra.Command, args []string) error {
 	bundleID := args[0]
 	ctx := context.Background()
 
-	outputChan, conn, err := client.DebugStream(ctx, deviceID, bundleID)
+	outputChan, conn, err := client.DebugStream(ctx, deviceID, bundleID, nil)
 	if err != nil {
 		return fmt.Errorf("debug failed: %w", err)
 	}

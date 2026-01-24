@@ -61,6 +61,10 @@ jobs:
         run: |
           if [ -f "pubspec.yaml" ]; then
             echo "type=flutter" >> $GITHUB_OUTPUT
+          elif [ -f "package.json" ] && grep -q '"expo"' package.json; then
+            echo "type=expo" >> $GITHUB_OUTPUT
+          elif [ -f "package.json" ] && grep -q '"react-native"' package.json; then
+            echo "type=reactnative" >> $GITHUB_OUTPUT
           else
             echo "type=native" >> $GITHUB_OUTPUT
           fi
@@ -76,6 +80,26 @@ jobs:
       - name: Flutter pub get
         if: steps.detect.outputs.type == 'flutter'
         run: flutter pub get
+
+      - name: Setup Node.js
+        if: steps.detect.outputs.type == 'reactnative' || steps.detect.outputs.type == 'expo'
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Restore node_modules cache
+        if: steps.detect.outputs.type == 'reactnative' || steps.detect.outputs.type == 'expo'
+        uses: actions/cache@v4
+        id: node-modules-cache
+        with:
+          path: node_modules
+          key: node-modules-${{ runner.os }}-${{ hashFiles('package-lock.json', 'yarn.lock') }}
+          restore-keys: |
+            node-modules-${{ runner.os }}-
+
+      - name: Install npm dependencies
+        if: (steps.detect.outputs.type == 'reactnative' || steps.detect.outputs.type == 'expo') && steps.node-modules-cache.outputs.cache-hit != 'true'
+        run: npm install
 
       - name: Restore Pods cache
         uses: actions/cache@v4
@@ -148,42 +172,60 @@ jobs:
             WORKSPACE=$(find . -maxdepth 1 -name "*.xcworkspace" | head -1)
           fi
 
-          # Determine scheme
-          if [ -z "$SCHEME" ]; then
-            if [ "$PROJECT_TYPE" = "flutter" ]; then
-              SCHEME="Runner"
-            elif [ -n "$WORKSPACE" ]; then
-              SCHEME=$(xcodebuild -workspace "$WORKSPACE" -list 2>/dev/null | grep -A 100 "Schemes:" | tail -n +2 | grep -v -E "^[[:space:]]*(Flutter|Pods-)" | head -1 | xargs)
+          # Determine scheme (only needed for native projects)
+          if [ -z "$SCHEME" ] && [ "$PROJECT_TYPE" = "native" ]; then
+            if [ -n "$WORKSPACE" ]; then
+              SCHEME=$(xcodebuild -workspace "$WORKSPACE" -list 2>/dev/null | grep -A 100 "Schemes:" | tail -n +2 | grep -v -E "^[[:space:]]*Pods-" | head -1 | xargs)
               if [ -z "$SCHEME" ]; then
                 SCHEME=$(xcodebuild -workspace "$WORKSPACE" -list 2>/dev/null | grep -A 100 "Schemes:" | tail -n +2 | head -1 | xargs)
               fi
             elif [ -n "$PROJECT" ]; then
               SCHEME=$(xcodebuild -project "$PROJECT" -list 2>/dev/null | grep -A 100 "Schemes:" | tail -n +2 | head -1 | xargs)
             fi
+            echo "Building with scheme: $SCHEME (configuration: $CONFIGURATION)"
           fi
-
-          echo "Building with scheme: $SCHEME (configuration: $CONFIGURATION)"
 
           # Use custom DerivedData path for caching
           DERIVED_DATA_PATH="${GITHUB_WORKSPACE}/DerivedData"
 
-          # For Flutter projects, use flutter build to ensure Dart VM is properly configured
           if [ "$PROJECT_TYPE" = "flutter" ]; then
-            cd ..  # Back to project root for flutter command
-
+            cd ..
             if [ "$CONFIGURATION" = "Debug" ]; then
-              # Debug build with Dart VM enabled for hot reload
-              echo "Building Flutter iOS Debug (hot reload enabled)..."
+              echo "Building Flutter iOS Debug..."
               flutter build ios --debug --no-codesign
             else
-              # Release build
               echo "Building Flutter iOS Release..."
               flutter build ios --release --no-codesign
             fi
-
             cd "$IOS_PATH"
+          elif [ "$PROJECT_TYPE" = "reactnative" ] || [ "$PROJECT_TYPE" = "expo" ]; then
+            # Use xcodebuild directly for React Native/Expo
+            echo "Building React Native iOS ($CONFIGURATION)..."
+            BUILD_CMD="xcodebuild"
+            if [ -n "$WORKSPACE" ]; then
+              BUILD_CMD="$BUILD_CMD -workspace $WORKSPACE"
+            elif [ -n "$PROJECT" ]; then
+              BUILD_CMD="$BUILD_CMD -project $PROJECT"
+            fi
+
+            # Auto-detect scheme from workspace name (e.g., MyApp.xcworkspace -> MyApp)
+            if [ -n "$WORKSPACE" ]; then
+              SCHEME=$(basename "$WORKSPACE" .xcworkspace)
+            elif [ -n "$PROJECT" ]; then
+              SCHEME=$(basename "$PROJECT" .xcodeproj)
+            fi
+
+            BUILD_CMD="$BUILD_CMD -scheme $SCHEME"
+            BUILD_CMD="$BUILD_CMD -configuration $CONFIGURATION"
+            BUILD_CMD="$BUILD_CMD -destination 'generic/platform=iOS'"
+            BUILD_CMD="$BUILD_CMD -derivedDataPath $DERIVED_DATA_PATH"
+            BUILD_CMD="$BUILD_CMD CODE_SIGNING_ALLOWED=NO"
+            BUILD_CMD="$BUILD_CMD COMPILER_INDEX_STORE_ENABLE=NO"
+            BUILD_CMD="$BUILD_CMD -quiet build"
+
+            echo "Running: $BUILD_CMD"
+            eval $BUILD_CMD
           else
-            # Non-Flutter: use xcodebuild directly
             BUILD_CMD="xcodebuild"
             if [ -n "$WORKSPACE" ]; then
               BUILD_CMD="$BUILD_CMD -workspace $WORKSPACE"
@@ -247,7 +289,7 @@ jobs:
               # Flutter outputs to build/ios/iphoneos/
               APP_PATH=$(find "${GITHUB_WORKSPACE}/build/ios/iphoneos" -name "*.app" -type d | head -1)
             else
-              # Native projects use DerivedData
+              # Native and React Native/Expo use DerivedData
               APP_PATH=$(find "$DERIVED_DATA_PATH/Build/Products/${CONFIGURATION}-iphoneos" -name "*.app" -type d | head -1)
             fi
 
@@ -300,6 +342,7 @@ jobs:
           echo "- **Configuration:** $CONFIGURATION" >> $GITHUB_STEP_SUMMARY
           echo "- **DerivedData Cache:** ${{ steps.cache-deriveddata.outputs.cache-hit == 'true' && 'Hit' || 'Miss' }}" >> $GITHUB_STEP_SUMMARY
           echo "- **Pods Cache:** ${{ steps.pods-cache.outputs.cache-hit == 'true' && 'Hit' || 'Miss' }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Node Modules Cache:** ${{ steps.node-modules-cache.outputs.cache-hit == 'true' && 'Hit' || 'N/A' }}" >> $GITHUB_STEP_SUMMARY
           if [ "$USE_SIGNING" = "true" ]; then
             echo "- **Signing:** Signed (development)" >> $GITHUB_STEP_SUMMARY
           else

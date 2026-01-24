@@ -1,19 +1,15 @@
-// Package dev provides development session management for Flutter hot reload.
+// Package dev provides development session management for Flutter and React Native hot reload.
 package dev
 
 import (
 	"archive/zip"
 	"context"
-	"encoding/json"
 	"fmt"
 	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
-	"regexp"
-	"runtime"
 	"strings"
-	"time"
 
 	"github.com/MobAI-App/ios-builder/internal/mobai"
 	"github.com/gorilla/websocket"
@@ -21,7 +17,19 @@ import (
 	"howett.net/plist"
 )
 
-// Session manages a Flutter development session with MobAI.
+// FrameworkHandler handles framework-specific dev workflow.
+type FrameworkHandler interface {
+	// Setup runs before app install (e.g., Flutter custom device, Metro start)
+	Setup(ctx context.Context) error
+	// DebugConfig returns environment variables and arguments for app launch
+	DebugConfig() *mobai.DebugConfig
+	// Attach runs after app launch to enable hot reload
+	Attach(ctx context.Context, client *mobai.Client, deviceID string, debugOutput <-chan mobai.DebugOutput) error
+	// Stop cleans up resources
+	Stop()
+}
+
+// Session manages a development session with MobAI.
 type Session struct {
 	mobai       *mobai.Client
 	mobaiURL    string
@@ -30,15 +38,17 @@ type Session struct {
 	bundleID    string
 	debugConn   *websocket.Conn
 	skipInstall bool
+	handler     FrameworkHandler
 }
 
 // NewSession creates a new development session.
-func NewSession(mobaiURL, deviceID, ipaPath string) *Session {
+func NewSession(mobaiURL, deviceID, ipaPath string, h FrameworkHandler) *Session {
 	return &Session{
 		mobai:    mobai.NewClient(mobaiURL),
 		mobaiURL: mobaiURL,
 		deviceID: deviceID,
 		ipaPath:  ipaPath,
+		handler:  h,
 	}
 }
 
@@ -86,79 +96,12 @@ func FindIPA(distDir string) (string, error) {
 	return matches[idx], nil
 }
 
-// EnsureCustomDevice ensures Flutter custom_devices.json has mobai-ios configured.
-// If mobaiURL is provided and we're on WSL, it will be included in the commands.
-func EnsureCustomDevice(mobaiURL string) error {
-	if err := exec.Command("flutter", "config", "--enable-custom-devices").Run(); err != nil {
-		return fmt.Errorf("failed to enable custom devices - run 'flutter config --enable-custom-devices' manually first: %w", err)
-	}
-
-	var configPath string
-	if runtime.GOOS == "windows" {
-		// Windows: %APPDATA%\.flutter_custom_devices.json
-		appData := os.Getenv("APPDATA")
-		if appData == "" {
-			return fmt.Errorf("APPDATA environment variable not set")
-		}
-		configPath = filepath.Join(appData, ".flutter_custom_devices.json")
-	} else {
-		// Linux/macOS: ~/.config/flutter/custom_devices.json
-		homeDir, err := os.UserHomeDir()
-		if err != nil {
-			return fmt.Errorf("get home dir: %w", err)
-		}
-		flutterDir := filepath.Join(homeDir, ".config", "flutter")
-		if err := os.MkdirAll(flutterDir, 0755); err != nil {
-			return fmt.Errorf("create flutter config dir: %w", err)
-		}
-		configPath = filepath.Join(flutterDir, "custom_devices.json")
-	}
-
-	execPath, err := os.Executable()
-	if err != nil {
-		return fmt.Errorf("get executable path: %w", err)
-	}
-
-	pingCmd := []string{execPath, "mobai", "--url", mobaiURL, "ping"}
-	installCmd := []string{execPath, "mobai", "--url", mobaiURL, "install", "${localPath}"}
-	runDebugCmd := []string{execPath, "mobai", "--url", mobaiURL, "run-debug", "${appName}"}
-	forwardCmd := []string{execPath, "mobai", "--url", mobaiURL, "forward", "${devicePort}", "${hostPort}"}
-
-	config := map[string]any{
-		"custom-devices": []any{
-			map[string]any{
-				"id":                      "mobai-ios",
-				"label":                   "MobAI iOS Device",
-				"sdkNameAndVersion":       "iOS (via MobAI)",
-				"platform":                nil,
-				"enabled":                 true,
-				"ping":                    pingCmd,
-				"pingSuccessRegex":        "success",
-				"install":                 installCmd,
-				"uninstall":               []string{"echo", "uninstall not supported"},
-				"runDebug":                runDebugCmd,
-				"forwardPort":             forwardCmd,
-				"forwardPortSuccessRegex": "forwarded",
-			},
-		},
-	}
-
-	output, err := json.MarshalIndent(config, "", "  ")
-	if err != nil {
-		return fmt.Errorf("marshal config: %w", err)
-	}
-
-	if err := os.WriteFile(configPath, output, 0644); err != nil {
-		return fmt.Errorf("write config: %w", err)
-	}
-
-	return nil
-}
-
-// Start runs the full dev session: install, launch, attach.
+// Start runs the full dev session: setup, install, launch, attach.
 func (s *Session) Start(ctx context.Context) error {
-	if err := EnsureCustomDevice(s.mobaiURL); err != nil {
-		fmt.Printf("Warning: could not configure custom device: %v\n", err)
+	if s.handler != nil {
+		if err := s.handler.Setup(ctx); err != nil {
+			fmt.Printf("Warning: setup failed: %v\n", err)
+		}
 	}
 
 	if err := s.connectDevice(ctx); err != nil {
@@ -171,15 +114,27 @@ func (s *Session) Start(ctx context.Context) error {
 	} else {
 		fmt.Printf("Skipping install, using bundle ID: %s\n", s.bundleID)
 	}
-	debugURL, outputChan, err := s.launchAndFindDebugURL(ctx)
+
+	debugOutput, err := s.launchApp(ctx)
 	if err != nil {
 		return err
 	}
-	return s.waitWithDebugURL(ctx, debugURL, outputChan)
+
+	if s.handler != nil {
+		return s.handler.Attach(ctx, s.mobai, s.deviceID, debugOutput)
+	}
+
+	// No handler, just drain output
+	for range debugOutput {
+	}
+	return nil
 }
 
 // Stop cleans up resources.
 func (s *Session) Stop() {
+	if s.handler != nil {
+		s.handler.Stop()
+	}
 	if s.debugConn != nil {
 		_ = s.debugConn.Close()
 	}
@@ -325,72 +280,25 @@ func extractBundleIDFromIPA(ipaPath string) string {
 	return ""
 }
 
-func (s *Session) launchAndFindDebugURL(ctx context.Context) (string, <-chan mobai.DebugOutput, error) {
+func (s *Session) launchApp(ctx context.Context) (<-chan mobai.DebugOutput, error) {
 	fmt.Println("Launching app with debugger...")
 
-	outputChan, conn, err := s.mobai.DebugStream(ctx, s.deviceID, s.bundleID)
+	var config *mobai.DebugConfig
+	if s.handler != nil {
+		config = s.handler.DebugConfig()
+	}
+
+	outputChan, conn, err := s.mobai.DebugStream(ctx, s.deviceID, s.bundleID, config)
 	if err != nil {
-		if strings.Contains(err.Error(), "Error code: 2") {
-			return "", nil, fmt.Errorf("launch failed: developer not trusted. On device go to Settings > General > VPN & Device Management and trust the developer")
+		errMsg := err.Error()
+		if strings.Contains(errMsg, "Error code: 2") || strings.Contains(errMsg, "launch failed") {
+			return nil, fmt.Errorf("launch failed: developer not trusted - on device go to Settings > General > VPN & Device Management and trust the developer")
 		}
-		return "", nil, fmt.Errorf("debug stream: %w", err)
+		return nil, fmt.Errorf("debug stream: %w", err)
 	}
 	s.debugConn = conn
 
-	fmt.Println("Waiting for debug service...")
-
-	re := regexp.MustCompile(`(?:Observatory|Dart VM service)[^h]*(http://[^\s]+)`)
-	timeout := time.After(30 * time.Second)
-
-	for {
-		select {
-		case <-ctx.Done():
-			return "", nil, ctx.Err()
-		case <-timeout:
-			return "", nil, fmt.Errorf("timeout waiting for debug service - is this a debug build?")
-		case output, ok := <-outputChan:
-			if !ok {
-				return "", nil, fmt.Errorf("debug stream closed")
-			}
-			if output.Type == "error" {
-				return "", nil, fmt.Errorf("debug error: %s", output.Message)
-			}
-			if m := re.FindStringSubmatch(output.Data); len(m) >= 2 {
-				fmt.Printf("Found debug service: %s\n", m[1])
-				return m[1], outputChan, nil
-			}
-		}
-	}
-}
-
-func (s *Session) waitWithDebugURL(ctx context.Context, debugURL string, outputChan <-chan mobai.DebugOutput) error {
-	fmt.Println()
-	fmt.Printf("VM Service URL (on device): %s\n", debugURL)
-
-	fmt.Println()
-
-	go func() {
-		for output := range outputChan {
-			if output.Type == "exit" {
-				return
-			}
-		}
-	}()
-
-	fmt.Println("Attaching Flutter debugger...")
-	fmt.Println()
-
-	cmd := exec.CommandContext(ctx, "flutter", "attach", "-d", "mobai-ios", "--debug-url="+debugURL)
-	cmd.Stdin = os.Stdin
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	cmd.Env = append(os.Environ(), "MOBAI_DEVICE_ID="+s.deviceID)
-
-	err := cmd.Run()
-	if err != nil {
-		return &RuntimeError{Err: err}
-	}
-	return nil
+	return outputChan, nil
 }
 
 // RuntimeError wraps runtime errors to distinguish from CLI errors

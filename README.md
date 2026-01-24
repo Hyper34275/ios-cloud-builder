@@ -7,7 +7,7 @@ Builder is a CLI tool for iOS development without a Mac. It uses GitHub Actions 
 ## Features
 
 - **Build from anywhere**: Build any iOS app (native, Flutter, React Native) via GitHub Actions
-- **Flutter dev tools**: Hot reload on real iOS devices from Windows (React Native coming soon)
+- **Flutter & React Native dev tools**: Hot reload on real iOS devices from Windows/Linux
 - **Simple setup**: One command to add the workflow to your repo
 - **Code signing**: Optional signing with your certificate and provisioning profile
 - **Device integration**: Install and run apps via MobAI
@@ -91,9 +91,10 @@ builder ios build             # Trigger build and download IPA to ./dist/
 builder ios build --unsigned  # Build without code signing (if signing is configured)
 
 # Development (requires MobAI)
-builder dev flutter           # Install and launch app with Flutter hot reload
-builder dev flutter --ipa <path>  # Use specific IPA
+builder dev flutter           # Flutter hot reload
+builder dev rn                # React Native hot reload (alias: react-native)
 builder dev flutter --skip-install --bundle-id <id>  # Use already installed app
+builder dev rn --metro-port 8082  # Use custom Metro port
 
 # Code signing
 builder signing setup         # Set up code signing secrets
@@ -167,9 +168,11 @@ Once configured, `builder ios build` will produce signed IPAs. Use `--unsigned` 
 
 Use [MobAI](https://mobai.run) to sign and install your IPA directly to your device. MobAI handles code signing automatically and works with both signed and unsigned builds.
 
-## Flutter Development on Windows
+## Development on Windows/Linux
 
-Builder supports Flutter hot reload on Windows using [MobAI](https://mobai.run) for iOS device control. This allows you to develop Flutter apps for iOS without a Mac.
+Builder supports hot reload for Flutter and React Native on Windows/Linux using [MobAI](https://mobai.run) for iOS device control. This allows you to develop iOS apps without a Mac.
+
+## Flutter Development
 
 ### Setup
 
@@ -215,6 +218,60 @@ If you don't see your recent Dart changes after launching, press `R` in the term
 - Make sure you're using the correct bundle ID (with team ID suffix)
 - Try hot restart with `R` key
 - Check that MobAI shows the device as connected
+
+## React Native Development
+
+### Setup
+
+1. Download and install [MobAI](https://mobai.run/download), then connect your iOS device
+2. Build your app:
+   ```bash
+   builder ios build
+   ```
+3. Start development with hot reload:
+   ```bash
+   builder dev rn
+   ```
+   This will:
+   - Start Metro bundler if not running
+   - Install the IPA on your device (with optional re-signing)
+   - Launch the app with Metro URL configured automatically
+
+### Subsequent Runs
+
+Once the app is installed:
+```bash
+builder dev rn --skip-install --bundle-id com.example.myapp.TEAMID
+```
+
+### Custom Metro Port
+
+If port 8081 is in use:
+```bash
+builder dev rn --metro-port 8082
+```
+
+### When to Rebuild
+
+- **Native code changes** (Swift, Objective-C, Podfile, native modules): Run `builder ios build` and reinstall
+- **JavaScript changes only**: No rebuild needed - Metro handles it automatically
+
+### Troubleshooting
+
+**Metro not starting**
+- Ensure Node.js and React Native CLI are installed
+- Try starting Metro manually: `npx react-native start`
+
+**App not connecting to Metro**
+- Device must be on the same WiFi network as the computer running Metro
+- Check that Metro is running and accessible
+- Verify the Metro port is correct (default: 8081)
+- On WSL2, ensure MobAI has external connections enabled
+
+**Hot reload not working**
+- Shake device or press `d` in Metro terminal to open dev menu
+- Enable "Fast Refresh" in dev menu
+- Try reloading with `r` in Metro terminal
 
 ## Build Limits
 

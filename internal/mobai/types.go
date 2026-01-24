@@ -44,6 +44,12 @@ type PortForwardResponse struct {
 	DevicePort int    `json:"devicePort"`
 }
 
+// DebugConfig is the configuration sent to the debug WebSocket after connecting
+type DebugConfig struct {
+	Environment map[string]string `json:"environment,omitempty"`
+	Arguments   []string          `json:"arguments,omitempty"`
+}
+
 // DebugOutput represents a message from the debug WebSocket stream
 type DebugOutput struct {
 	Type    string `json:"type"`    // "stdout", "stderr", "error", "exit"

@@ -126,7 +126,7 @@ func (c *Client) ForwardPort(ctx context.Context, deviceID string, req PortForwa
 // DebugStream connects to the debug WebSocket endpoint to launch an app with debugger
 // and stream stdout. Returns a channel for debug output and the WebSocket connection
 // (which should be closed when done to stop the debugger).
-func (c *Client) DebugStream(ctx context.Context, deviceID, bundleID string) (<-chan DebugOutput, *websocket.Conn, error) {
+func (c *Client) DebugStream(ctx context.Context, deviceID, bundleID string, config *DebugConfig) (<-chan DebugOutput, *websocket.Conn, error) {
 	// Convert http:// to ws://
 	wsURL := strings.Replace(c.baseURL, "http://", "ws://", 1)
 	wsURL = strings.Replace(wsURL, "https://", "wss://", 1)
@@ -136,6 +136,16 @@ func (c *Client) DebugStream(ctx context.Context, deviceID, bundleID string) (<-
 	conn, _, err := websocket.DefaultDialer.DialContext(ctx, wsURL+path, nil)
 	if err != nil {
 		return nil, nil, fmt.Errorf("websocket connect: %w", err)
+	}
+
+	// Send config immediately after connecting
+	cfg := config
+	if cfg == nil {
+		cfg = &DebugConfig{}
+	}
+	if err := conn.WriteJSON(cfg); err != nil {
+		_ = conn.Close()
+		return nil, nil, fmt.Errorf("send config: %w", err)
 	}
 
 	outputChan := make(chan DebugOutput, 100)

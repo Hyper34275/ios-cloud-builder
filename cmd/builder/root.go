@@ -27,6 +27,7 @@ var rootCmd = &cobra.Command{
 	Short: "Build iOS apps remotely using GitHub Actions",
 	Long: `Builder sets up GitHub Actions workflows to build iOS apps remotely.
 Perfect for developers on Windows/Linux who need to build iOS IPAs.`,
+	SilenceUsage: true,
 }
 
 func initConfig() {
@@ -81,6 +82,14 @@ This command:
 func isFlutterProject() bool {
 	_, err := os.Stat("pubspec.yaml")
 	return err == nil
+}
+
+func isExpoProject() bool {
+	data, err := os.ReadFile("package.json")
+	if err != nil {
+		return false
+	}
+	return strings.Contains(string(data), `"expo"`)
 }
 
 func getLocalFlutterVersion() string {
@@ -142,6 +151,7 @@ func detectGitHubRepo(remoteName string) (owner, repo string, err error) {
 	// Parse GitHub URL formats:
 	// https://github.com/owner/repo.git
 	// git@github.com:owner/repo.git
+	// git@github-alias:owner/repo.git (SSH config aliases)
 	// https://github.com/owner/repo
 
 	remoteURL = strings.TrimSuffix(remoteURL, ".git")
@@ -151,10 +161,15 @@ func detectGitHubRepo(remoteName string) (owner, repo string, err error) {
 		if len(parts) >= 2 {
 			return parts[0], parts[1], nil
 		}
-	} else if path, found := strings.CutPrefix(remoteURL, "git@github.com:"); found {
-		parts := strings.Split(path, "/")
-		if len(parts) >= 2 {
-			return parts[0], parts[1], nil
+	}
+
+	if strings.HasPrefix(remoteURL, "git@") {
+		if colonIdx := strings.Index(remoteURL, ":"); colonIdx > 0 {
+			path := remoteURL[colonIdx+1:]
+			parts := strings.Split(path, "/")
+			if len(parts) >= 2 {
+				return parts[0], parts[1], nil
+			}
 		}
 	}
 
@@ -276,6 +291,9 @@ func runInit(cmd *cobra.Command, args []string) error {
 		},
 		Flutter: config.FlutterConfig{
 			Version: flutterVersion,
+		},
+		ReactNative: config.ReactNativeConfig{
+			Expo: isExpoProject(),
 		},
 	}
 
