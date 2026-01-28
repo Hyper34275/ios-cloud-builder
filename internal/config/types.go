@@ -13,7 +13,16 @@ type Config struct {
 
 // FlutterConfig holds Flutter-specific settings
 type FlutterConfig struct {
-	Version string `json:"version,omitempty"` // Pinned Flutter version (e.g., "3.24.0")
+	Version string      `json:"version,omitempty"` // Pinned Flutter version (e.g., "3.24.0")
+	Watch   WatchConfig `json:"watch,omitempty"`   // File watcher settings for hot reload
+}
+
+// WatchConfig holds file watcher settings for hot reload
+type WatchConfig struct {
+	Dirs     []string `json:"dirs,omitempty"`     // Directories to watch
+	Patterns []string `json:"patterns,omitempty"` // File patterns to match (by suffix)
+	Ignore   []string `json:"ignore,omitempty"`   // Patterns to ignore (by suffix)
+	Debounce int      `json:"debounce,omitempty"` // Debounce ms
 }
 
 // ReactNativeConfig holds React Native-specific settings

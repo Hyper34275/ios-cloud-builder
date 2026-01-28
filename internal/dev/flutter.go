@@ -1,28 +1,42 @@
 package dev
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"strings"
 	"time"
 
+	"github.com/MobAI-App/ios-builder/internal/config"
 	"github.com/MobAI-App/ios-builder/internal/mobai"
 )
 
 // FlutterHandler implements FrameworkHandler for Flutter projects.
 type FlutterHandler struct {
-	mobaiURL string
-	noAttach bool
+	mobaiURL    string
+	noAttach    bool
+	noWatch     bool
+	watchConfig *config.WatchConfig
+	watcher     *FileWatcher
+	stdinMux    *StdinMux
+	cancelWatch context.CancelFunc
 }
 
 // NewFlutterHandler creates a new Flutter handler.
-func NewFlutterHandler(mobaiURL string, noAttach bool) *FlutterHandler {
-	return &FlutterHandler{mobaiURL: mobaiURL, noAttach: noAttach}
+func NewFlutterHandler(mobaiURL string, noAttach, noWatch bool, watchCfg *config.WatchConfig) *FlutterHandler {
+	return &FlutterHandler{
+		mobaiURL:    mobaiURL,
+		noAttach:    noAttach,
+		noWatch:     noWatch,
+		watchConfig: watchCfg,
+	}
 }
 
 // Setup configures Flutter custom device for MobAI.
@@ -47,7 +61,19 @@ func (h *FlutterHandler) DebugConfig() *mobai.DebugConfig {
 	return nil
 }
 
-func (h *FlutterHandler) Stop() {}
+func (h *FlutterHandler) Stop() {
+	if h.watcher != nil {
+		h.watcher.Stop()
+	}
+	if h.stdinMux != nil {
+		if err := h.stdinMux.Stop(); err != nil {
+			fmt.Printf("[builder] Warning: failed to close stdin mux: %v\n", err)
+		}
+	}
+	if h.cancelWatch != nil {
+		h.cancelWatch()
+	}
+}
 
 func (h *FlutterHandler) findDebugURL(ctx context.Context, debugOutput <-chan mobai.DebugOutput) (string, <-chan mobai.DebugOutput, error) {
 	re := regexp.MustCompile(`(?:Observatory|Dart VM service)[^h]*(http://[^\s]+)`)
@@ -99,16 +125,86 @@ func (h *FlutterHandler) runFlutterAttach(ctx context.Context, deviceID, debugUR
 	fmt.Println()
 
 	cmd := exec.CommandContext(ctx, "flutter", "attach", "-d", "mobai-ios", "--debug-url="+debugURL)
-	cmd.Stdin = os.Stdin
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
 	cmd.Env = append(os.Environ(), "MOBAI_DEVICE_ID="+deviceID)
 
-	err := cmd.Run()
+	h.stdinMux = NewStdinMux()
+	cmd.Stdin = h.stdinMux.Reader()
+	go h.stdinMux.Start(ctx)
+
+	stdoutPipe, err := cmd.StdoutPipe()
+	if err != nil {
+		return fmt.Errorf("create stdout pipe: %w", err)
+	}
+	cmd.Stderr = os.Stderr
+
+	if err := cmd.Start(); err != nil {
+		return fmt.Errorf("start flutter attach: %w", err)
+	}
+
+	go h.handleFlutterOutput(ctx, stdoutPipe)
+
+	err = cmd.Wait()
 	if err != nil {
 		return &RuntimeError{Err: err}
 	}
 	return nil
+}
+
+func (h *FlutterHandler) handleFlutterOutput(ctx context.Context, stdout io.Reader) {
+	scanner := bufio.NewScanner(stdout)
+	readyDetected := false
+
+	for scanner.Scan() {
+		line := scanner.Text()
+		fmt.Println(line)
+
+		if !readyDetected && strings.Contains(line, "Flutter run key commands") {
+			readyDetected = true
+			h.onFlutterReady(ctx)
+		}
+	}
+}
+
+func (h *FlutterHandler) onFlutterReady(ctx context.Context) {
+	if h.stdinMux != nil {
+		fmt.Println("\n[builder] Sending initial hot restart...")
+		h.stdinMux.SendCommand('R')
+	}
+
+	if !h.noWatch && h.watchConfig != nil && h.stdinMux != nil {
+		h.startFileWatcher(ctx)
+	}
+}
+
+func (h *FlutterHandler) startFileWatcher(ctx context.Context) {
+	watchCtx, cancel := context.WithCancel(ctx)
+	h.cancelWatch = cancel
+
+	cfg := FileWatcherConfig{
+		Dirs:     h.watchConfig.Dirs,
+		Patterns: h.watchConfig.Patterns,
+		Ignore:   h.watchConfig.Ignore,
+		Debounce: time.Duration(h.watchConfig.Debounce) * time.Millisecond,
+		OnChange: func() {
+			fmt.Println("\n[builder] File change detected, triggering hot reload...")
+			h.stdinMux.SendCommand('r')
+		},
+	}
+
+	watcher, err := NewFileWatcher(&cfg)
+	if err != nil {
+		fmt.Printf("\n[builder] Warning: failed to start file watcher: %v\n", err)
+		return
+	}
+	h.watcher = watcher
+
+	fmt.Printf("\n[builder] Watching for changes in: %v\n", cfg.Dirs)
+
+	go func() {
+		if err := watcher.Start(watchCtx); err != nil && err != context.Canceled {
+			fmt.Printf("\n[builder] File watcher error: %v\n", err)
+		}
+	}()
 }
 
 // EnsureCustomDevice ensures Flutter custom_devices.json has mobai-ios configured.

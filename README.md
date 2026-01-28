@@ -91,7 +91,9 @@ builder ios build             # Trigger build and download IPA to ./dist/
 builder ios build --unsigned  # Build without code signing (if signing is configured)
 
 # Development (requires MobAI)
-builder dev flutter           # Flutter hot reload
+builder dev flutter           # Flutter hot reload with file watching
+builder dev flutter --no-watch  # Disable automatic file watching
+builder dev flutter --no-attach # Print flutter attach command instead of running it
 builder dev rn                # React Native hot reload (alias: react-native)
 builder dev flutter --skip-install --bundle-id <id>  # Use already installed app
 builder dev rn --metro-port 8082  # Use custom Metro port
@@ -120,6 +122,14 @@ builder signing setup         # Set up code signing secrets
   "mobai": {
     "url": "http://localhost:8686",
     "device_id": ""
+  },
+  "flutter": {
+    "watch": {
+      "dirs": ["lib"],
+      "patterns": [".dart"],
+      "ignore": [".g.dart", ".freezed.dart"],
+      "debounce": 100
+    }
   }
 }
 ```
@@ -148,6 +158,15 @@ hostname.exe
   }
 }
 ```
+
+### Flutter File Watcher
+
+| Field | Description | Default |
+|-------|-------------|---------|
+| `flutter.watch.dirs` | Directories to watch | `["lib"]` |
+| `flutter.watch.patterns` | File patterns to match | `[".dart"]` |
+| `flutter.watch.ignore` | Patterns to ignore | `[".g.dart", ".freezed.dart"]` |
+| `flutter.watch.debounce` | Debounce delay in ms | `100` |
 
 ## Code Signing
 
@@ -195,10 +214,28 @@ Once the app is installed, skip the install step:
 builder dev flutter --skip-install --bundle-id com.example.myapp.TEAMID
 ```
 
+### File Watching
+
+By default, `builder dev flutter` watches for Dart file changes and automatically triggers hot reload. When flutter attach connects, it also sends an initial hot restart to ensure your latest code is running.
+
+- **Automatic hot reload**: Edit a `.dart` file and save - hot reload triggers automatically
+- **Generated files ignored**: Files like `.g.dart` and `.freezed.dart` are ignored by default
+- **Configurable**: Customize watched directories, patterns, and debounce via `builder.json`
+
+To disable file watching:
+```bash
+builder dev flutter --no-watch
+```
+
+To print the `flutter attach` command instead of running it (useful for IDE integration):
+```bash
+builder dev flutter --no-attach
+```
+
 ### When to Rebuild
 
 - **Native code changes** (Swift, Objective-C, Podfile, native dependencies): Run `builder ios build` and reinstall
-- **Dart code changes only**: No rebuild needed - hot reload handles it automatically
+- **Dart code changes only**: No rebuild needed - file watcher triggers hot reload automatically
 
 If you don't see your recent Dart changes after launching, press `R` in the terminal to perform a hot restart.
 
@@ -218,6 +255,12 @@ If you don't see your recent Dart changes after launching, press `R` in the term
 - Make sure you're using the correct bundle ID (with team ID suffix)
 - Try hot restart with `R` key
 - Check that MobAI shows the device as connected
+
+**File watcher not triggering**
+- Ensure you're editing files in watched directories (default: `lib/`)
+- Check if the file matches watch patterns (default: `.dart`)
+- Generated files (`.g.dart`, `.freezed.dart`) are ignored by default
+- Try running without `--no-watch` flag
 
 ## React Native Development
 
