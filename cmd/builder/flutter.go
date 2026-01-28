@@ -37,6 +37,7 @@ func init() {
 	devFlutterCmd.Flags().Bool("skip-install", false, "Skip app installation (app must already be installed)")
 	devFlutterCmd.Flags().String("bundle-id", "", "Bundle ID (required with --skip-install)")
 	devFlutterCmd.Flags().Bool("no-attach", false, "Print flutter attach command instead of running it")
+	devFlutterCmd.Flags().Bool("no-watch", false, "Disable automatic hot reload on file changes")
 }
 
 func runDevFlutter(cmd *cobra.Command, args []string) error {
@@ -45,17 +46,39 @@ func runDevFlutter(cmd *cobra.Command, args []string) error {
 	ipaPath, _ := cmd.Flags().GetString("ipa")
 	skipInstall, _ := cmd.Flags().GetBool("skip-install")
 	bundleID, _ := cmd.Flags().GetString("bundle-id")
+	noAttach, _ := cmd.Flags().GetBool("no-attach")
+	noWatch, _ := cmd.Flags().GetBool("no-watch")
 
-	if cfg, err := config.NewManager().Load(); err == nil {
+	watchCfg := &config.WatchConfig{
+		Dirs:     []string{"lib"},
+		Patterns: []string{".dart"},
+		Ignore:   []string{".g.dart", ".freezed.dart"},
+		Debounce: 100,
+	}
+
+	mgr := config.NewManager()
+	if cfg, err := mgr.Load(); err == nil {
 		if !cmd.Flags().Changed("mobai-url") && cfg.MobAI.URL != "" {
 			mobaiURL = cfg.MobAI.URL
 		}
 		if !cmd.Flags().Changed("device") && cfg.MobAI.DeviceID != "" {
 			deviceID = cfg.MobAI.DeviceID
 		}
-	}
 
-	noAttach, _ := cmd.Flags().GetBool("no-attach")
+		w := &cfg.Flutter.Watch
+		if len(w.Dirs) > 0 {
+			watchCfg.Dirs = w.Dirs
+		}
+		if len(w.Patterns) > 0 {
+			watchCfg.Patterns = w.Patterns
+		}
+		if len(w.Ignore) > 0 {
+			watchCfg.Ignore = w.Ignore
+		}
+		if w.Debounce > 0 {
+			watchCfg.Debounce = w.Debounce
+		}
+	}
 
 	if skipInstall {
 		if bundleID == "" {
@@ -78,7 +101,7 @@ func runDevFlutter(cmd *cobra.Command, args []string) error {
 		fmt.Println()
 	}
 
-	handler := dev.NewFlutterHandler(mobaiURL, noAttach)
+	handler := dev.NewFlutterHandler(mobaiURL, noAttach, noWatch, watchCfg)
 	session := dev.NewSession(mobaiURL, deviceID, ipaPath, handler)
 	session.SetSkipInstall(skipInstall, bundleID)
 
