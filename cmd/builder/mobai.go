@@ -107,13 +107,8 @@ func runMobaiPing(cmd *cobra.Command, args []string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	devices, err := client.ListDevices(ctx)
-	if err != nil {
+	if err := client.Health(ctx); err != nil {
 		return fmt.Errorf("cannot connect to MobAI: %w", err)
-	}
-
-	if len(devices) == 0 {
-		return fmt.Errorf("no devices connected")
 	}
 
 	fmt.Printf("success\n")
