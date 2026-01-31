@@ -94,6 +94,11 @@ func (c *Client) do(ctx context.Context, method, path string, body, result any) 
 	return nil
 }
 
+// Health checks if MobAI is running
+func (c *Client) Health(ctx context.Context) error {
+	return c.do(ctx, "GET", "/api/v1/health", nil, nil)
+}
+
 // ListDevices returns all connected devices
 func (c *Client) ListDevices(ctx context.Context) ([]Device, error) {
 	var devices []Device
