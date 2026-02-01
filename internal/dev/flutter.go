@@ -18,13 +18,19 @@ import (
 	"github.com/MobAI-App/ios-builder/internal/mobai"
 )
 
+// watcher is the interface for file change watchers.
+type watcher interface {
+	Start(ctx context.Context) error
+	Stop()
+}
+
 // FlutterHandler implements FrameworkHandler for Flutter projects.
 type FlutterHandler struct {
 	mobaiURL    string
 	noAttach    bool
 	noWatch     bool
 	watchConfig *config.WatchConfig
-	watcher     *FileWatcher
+	watcher     watcher
 	stdinMux    *StdinMux
 	cancelWatch context.CancelFunc
 }
@@ -191,17 +197,22 @@ func (h *FlutterHandler) startFileWatcher(ctx context.Context) {
 		},
 	}
 
-	watcher, err := NewFileWatcher(&cfg)
-	if err != nil {
-		fmt.Printf("\n[builder] Warning: failed to start file watcher: %v\n", err)
-		return
+	if needsPolling(cfg.Dirs) {
+		fmt.Println("\n[builder] WSL2 detected, using polling watcher for Windows filesystem")
+		h.watcher = NewPollingWatcher(&cfg)
+	} else {
+		w, err := NewFileWatcher(&cfg)
+		if err != nil {
+			fmt.Printf("\n[builder] Warning: failed to start file watcher: %v\n", err)
+			return
+		}
+		h.watcher = w
 	}
-	h.watcher = watcher
 
-	fmt.Printf("\n[builder] Watching for changes in: %v\n", cfg.Dirs)
+	fmt.Printf("[builder] Watching for changes in: %v\n", cfg.Dirs)
 
 	go func() {
-		if err := watcher.Start(watchCtx); err != nil && err != context.Canceled {
+		if err := h.watcher.Start(watchCtx); err != nil && err != context.Canceled {
 			fmt.Printf("\n[builder] File watcher error: %v\n", err)
 		}
 	}()

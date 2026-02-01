@@ -12,6 +12,38 @@ import (
 	"github.com/fsnotify/fsnotify"
 )
 
+// isWSL2 detects if running in WSL2 environment.
+func isWSL2() bool {
+	data, err := os.ReadFile("/proc/version")
+	if err != nil {
+		return false
+	}
+	version := strings.ToLower(string(data))
+	return strings.Contains(version, "microsoft") || strings.Contains(version, "wsl")
+}
+
+// isWindowsMountedPath checks if path is on a Windows-mounted filesystem in WSL.
+func isWindowsMountedPath(path string) bool {
+	absPath, err := filepath.Abs(path)
+	if err != nil {
+		return false
+	}
+	return strings.HasPrefix(absPath, "/mnt/")
+}
+
+// needsPolling determines if polling should be used instead of inotify.
+func needsPolling(dirs []string) bool {
+	if !isWSL2() {
+		return false
+	}
+	for _, dir := range dirs {
+		if isWindowsMountedPath(dir) {
+			return true
+		}
+	}
+	return false
+}
+
 // FileWatcherConfig holds configuration for the file watcher.
 type FileWatcherConfig struct {
 	Dirs     []string
