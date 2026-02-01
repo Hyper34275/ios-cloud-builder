@@ -4,6 +4,8 @@ Build and develop iOS apps from Windows, Linux, or any platform.
 
 Builder is a CLI tool for iOS development without a Mac. It uses GitHub Actions for remote builds and [MobAI](https://mobai.run) for on-device development.
 
+![Builder Demo](assets/ios-builder-demo.gif)
+
 ## Features
 
 - **Build from anywhere**: Build any iOS app (native, Flutter, React Native) via GitHub Actions
