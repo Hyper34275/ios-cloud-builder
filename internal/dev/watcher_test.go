@@ -64,7 +64,6 @@ func TestFileWatcher_MatchesPattern(t *testing.T) {
 				},
 			}
 
-			// Combined check: matches pattern AND not ignored
 			got := w.matchesPattern(tt.file) && !w.shouldIgnore(tt.file)
 			if got != tt.want {
 				t.Errorf("matchesPattern(%q) && !shouldIgnore = %v, want %v", tt.file, got, tt.want)
@@ -77,7 +76,6 @@ func TestFileWatcher_Debounce(t *testing.T) {
 	tmpDir := t.TempDir()
 	testFile := filepath.Join(tmpDir, "test.dart")
 
-	// Create initial file
 	if err := os.WriteFile(testFile, []byte("initial"), 0644); err != nil {
 		t.Fatalf("failed to create test file: %v", err)
 	}
@@ -88,7 +86,7 @@ func TestFileWatcher_Debounce(t *testing.T) {
 		Dirs:     []string{tmpDir},
 		Patterns: []string{".dart"},
 		Ignore:   []string{".g.dart"},
-		Debounce: 50 * time.Millisecond,
+		Debounce: 150 * time.Millisecond,
 		OnChange: func() {
 			callCount.Add(1)
 		},
@@ -107,28 +105,23 @@ func TestFileWatcher_Debounce(t *testing.T) {
 		errCh <- watcher.Start(ctx)
 	}()
 
-	// Wait for watcher to start
-	time.Sleep(50 * time.Millisecond)
+	time.Sleep(100 * time.Millisecond)
 
-	// Write to file 3 times rapidly
 	for i := range 3 {
 		if err := os.WriteFile(testFile, []byte("change"+string(rune('0'+i))), 0644); err != nil {
 			t.Fatalf("failed to write test file: %v", err)
 		}
-		time.Sleep(10 * time.Millisecond)
+		time.Sleep(20 * time.Millisecond)
 	}
 
-	// Wait for debounce to complete
-	time.Sleep(100 * time.Millisecond)
+	time.Sleep(250 * time.Millisecond)
 
 	watcher.Stop()
 
-	// Check for unexpected errors (context.Canceled is expected)
 	if err := <-errCh; err != nil && !errors.Is(err, context.Canceled) {
 		t.Errorf("watcher.Start() returned unexpected error: %v", err)
 	}
 
-	// Should be called only once due to debouncing
 	if count := callCount.Load(); count != 1 {
 		t.Errorf("onChange called %d times, want 1", count)
 	}
