@@ -14,6 +14,7 @@ import (
 	"github.com/MobAI-App/ios-builder/internal/build"
 	"github.com/MobAI-App/ios-builder/internal/config"
 	"github.com/MobAI-App/ios-builder/internal/github"
+	"github.com/MobAI-App/ios-builder/internal/iosbox"
 	"github.com/MobAI-App/ios-builder/internal/workflow"
 	"github.com/manifoldco/promptui"
 	"github.com/spf13/cobra"
@@ -426,7 +427,55 @@ func runIOSBuild(cmd *cobra.Command, args []string) error {
 		ctx = context.Background()
 	}
 
+	buildMethod, err := promptBuildMethod()
+	if err != nil {
+		return err
+	}
+
+	if buildMethod == "iosbox" {
+		return runIOSBoxBuild(cfg, outputDir)
+	}
+
 	return runBuild(ctx, cfg, outputDir, timeout, unsigned)
+}
+
+func promptBuildMethod() (string, error) {
+	prompt := promptui.Select{
+		Label: "Select build method",
+		Items: []string{
+			"GitHub Actions  — build on GitHub runners",
+			"iosbox (Docker) — build locally (flutter only)",
+		},
+	}
+	i, _, err := prompt.Run()
+	if err != nil {
+		return "", err
+	}
+	if i == 1 {
+		return "iosbox", nil
+	}
+	return "github", nil
+}
+
+func runIOSBoxBuild(cfg *config.Config, outputDir string) error {
+	cwd, err := os.Getwd()
+	if err != nil {
+		return fmt.Errorf("failed to get working directory: %w", err)
+	}
+
+	result, err := iosbox.Build(iosbox.BuildOptions{
+		ProjectDir:     cwd,
+		OutputDir:      outputDir,
+		FlutterVersion: cfg.Flutter.Version,
+	})
+	if err != nil {
+		return err
+	}
+
+	fmt.Println()
+	fmt.Printf("Build complete! Total time: %s\n", result.Duration.Round(time.Second))
+	fmt.Printf("IPA: %s\n", result.IPAPath)
+	return nil
 }
 
 func runBuild(ctx context.Context, cfg *config.Config, outputDir string, timeout time.Duration, unsigned bool) error {
