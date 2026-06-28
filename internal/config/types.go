@@ -8,6 +8,7 @@ type Config struct {
 	IOS         IOSConfig         `json:"ios,omitempty"`
 	Flutter     FlutterConfig     `json:"flutter,omitempty"`
 	ReactNative ReactNativeConfig `json:"reactNative,omitempty"`
+	KMP         KMPConfig         `json:"kmp,omitempty"`
 	MobAI       MobAIConfig       `json:"mobai,omitempty"`
 }
 
@@ -29,6 +30,14 @@ type WatchConfig struct {
 type ReactNativeConfig struct {
 	MetroPort int  `json:"metroPort,omitempty"` // Metro bundler port (default: 8081)
 	Expo      bool `json:"expo,omitempty"`      // Whether this is an Expo project
+}
+
+// KMPConfig holds Kotlin Multiplatform-specific settings.
+// The iOS app is built with xcodebuild, which invokes Gradle (via the Xcode
+// "Run Script" build phase, or CocoaPods) to compile the shared Kotlin
+// framework. The CI build therefore needs a JDK available for Gradle.
+type KMPConfig struct {
+	JDKVersion string `json:"jdkVersion,omitempty"` // JDK version for Gradle builds (default: 17)
 }
 
 // IOSConfig holds iOS build settings

@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"slices"
 	"strings"
 	"syscall"
 	"time"
@@ -120,6 +121,40 @@ func isExpoProject() bool {
 	return strings.Contains(string(data), `"expo"`)
 }
 
+// isKMPProject reports whether the current directory looks like a Kotlin
+// Multiplatform project. The multiplatform plugin usually lives in a module's
+// build file (e.g. shared/build.gradle.kts) rather than the root, so we scan
+// root and immediate subdirectory Gradle files.
+func isKMPProject() bool {
+	hasMultiplatform := func(path string) bool {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return false
+		}
+		return strings.Contains(string(data), "multiplatform")
+	}
+
+	if slices.ContainsFunc([]string{"settings.gradle.kts", "settings.gradle", "build.gradle.kts", "build.gradle"}, hasMultiplatform) {
+		return true
+	}
+
+	entries, err := os.ReadDir(".")
+	if err != nil {
+		return false
+	}
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		for _, name := range []string{"build.gradle.kts", "build.gradle"} {
+			if hasMultiplatform(filepath.Join(e.Name(), name)) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 func getLocalFlutterVersion() string {
 	cmd := exec.Command("flutter", "--version", "--machine")
 	output, err := cmd.Output()
@@ -142,6 +177,7 @@ func detectIOSPath() (string, string) {
 		framework string
 	}{
 		{"ios", "React Native/Expo"},
+		{"iosApp", "Kotlin Multiplatform"},
 		{"platforms/ios", "Cordova/Ionic"},
 	}
 
@@ -273,6 +309,18 @@ func runInit(cmd *cobra.Command, args []string) error {
 		}
 	}
 
+	// Detect Kotlin Multiplatform and prompt for JDK version
+	var jdkVersion string
+	if isKMPProject() {
+		fmt.Println()
+		fmt.Println("Detected Kotlin Multiplatform project")
+		fmt.Println("Note: KMP has no hot reload on iOS - rebuild for code changes.")
+		jdkVersion, err = promptString("JDK version for Gradle builds", "17")
+		if err != nil {
+			return err
+		}
+	}
+
 	fmt.Println()
 	fmt.Printf("Project:    %s\n", projectName)
 	fmt.Printf("Repository: %s/%s\n", githubOwner, repoName)
@@ -281,6 +329,9 @@ func runInit(cmd *cobra.Command, args []string) error {
 	}
 	if flutterVersion != "" {
 		fmt.Printf("Flutter:    %s\n", flutterVersion)
+	}
+	if jdkVersion != "" {
+		fmt.Printf("JDK:        %s\n", jdkVersion)
 	}
 	fmt.Println()
 
@@ -331,6 +382,9 @@ func runInit(cmd *cobra.Command, args []string) error {
 		},
 		ReactNative: config.ReactNativeConfig{
 			Expo: isExpoProject(),
+		},
+		KMP: config.KMPConfig{
+			JDKVersion: jdkVersion,
 		},
 	}
 

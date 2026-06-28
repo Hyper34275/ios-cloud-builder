@@ -38,6 +38,11 @@ on:
         required: false
         type: string
         default: ''
+      jdk_version:
+        description: 'JDK version for Kotlin Multiplatform Gradle builds (e.g., 17).'
+        required: false
+        type: string
+        default: '17'
 
 jobs:
   build:
@@ -83,6 +88,8 @@ jobs:
             echo "type=expo" >> $GITHUB_OUTPUT
           elif [ -f "package.json" ] && grep -q '"react-native"' package.json; then
             echo "type=reactnative" >> $GITHUB_OUTPUT
+          elif grep -rqlE 'kotlin\("multiplatform"\)|org\.jetbrains\.kotlin\.multiplatform|id\("org.jetbrains.kotlin.multiplatform"\)' --include='*.gradle.kts' --include='*.gradle' . 2>/dev/null; then
+            echo "type=kmp" >> $GITHUB_OUTPUT
           else
             echo "type=native" >> $GITHUB_OUTPUT
           fi
@@ -145,6 +152,17 @@ jobs:
       - name: Install npm dependencies
         if: (steps.detect.outputs.type == 'reactnative' || steps.detect.outputs.type == 'expo') && steps.node-modules-cache.outputs.cache-hit != 'true'
         run: npm install
+
+      - name: Setup JDK
+        if: steps.detect.outputs.type == 'kmp'
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: ${{ inputs.jdk_version || '17' }}
+
+      - name: Setup Gradle
+        if: steps.detect.outputs.type == 'kmp'
+        uses: gradle/actions/setup-gradle@v4
 
       - name: Restore Pods cache
         uses: actions/cache@v4
@@ -299,9 +317,18 @@ jobs:
               echo "Running: $ARCHIVE_CMD"
               eval $ARCHIVE_CMD
             fi
-          elif [ "$PROJECT_TYPE" = "reactnative" ] || [ "$PROJECT_TYPE" = "expo" ]; then
-            # Use xcodebuild directly for React Native/Expo
-            echo "Building React Native iOS ($CONFIGURATION)..."
+          elif [ "$PROJECT_TYPE" = "reactnative" ] || [ "$PROJECT_TYPE" = "expo" ] || [ "$PROJECT_TYPE" = "kmp" ]; then
+            # Use xcodebuild directly for React Native/Expo and Kotlin Multiplatform.
+            # For KMP, the Xcode build phase (or CocoaPods) invokes Gradle to
+            # compile the shared Kotlin framework, so the JDK must be on PATH.
+            if [ "$PROJECT_TYPE" = "kmp" ]; then
+              echo "Building Kotlin Multiplatform iOS ($CONFIGURATION)..."
+              if [ -f "${GITHUB_WORKSPACE}/gradlew" ]; then
+                chmod +x "${GITHUB_WORKSPACE}/gradlew"
+              fi
+            else
+              echo "Building React Native iOS ($CONFIGURATION)..."
+            fi
             BUILD_CMD="xcodebuild"
             if [ -n "$WORKSPACE" ]; then
               BUILD_CMD="$BUILD_CMD -workspace $WORKSPACE"
@@ -309,11 +336,14 @@ jobs:
               BUILD_CMD="$BUILD_CMD -project $PROJECT"
             fi
 
-            # Auto-detect scheme from workspace name (e.g., MyApp.xcworkspace -> MyApp)
-            if [ -n "$WORKSPACE" ]; then
-              SCHEME=$(basename "$WORKSPACE" .xcworkspace)
-            elif [ -n "$PROJECT" ]; then
-              SCHEME=$(basename "$PROJECT" .xcodeproj)
+            # Auto-detect scheme from workspace/project name (e.g., MyApp.xcworkspace -> MyApp)
+            # unless an explicit scheme was provided.
+            if [ -z "$SCHEME" ]; then
+              if [ -n "$WORKSPACE" ]; then
+                SCHEME=$(basename "$WORKSPACE" .xcworkspace)
+              elif [ -n "$PROJECT" ]; then
+                SCHEME=$(basename "$PROJECT" .xcodeproj)
+              fi
             fi
 
             BUILD_CMD="$BUILD_CMD -scheme '$SCHEME'"
