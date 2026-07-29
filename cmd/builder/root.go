@@ -28,6 +28,7 @@ var rootCmd = &cobra.Command{
 	Long: `Builder sets up GitHub Actions workflows to build iOS apps remotely.
 Perfect for developers on Windows/Linux who need to build iOS IPAs.`,
 	SilenceUsage: true,
+	Version:      version,
 }
 
 func initConfig() {

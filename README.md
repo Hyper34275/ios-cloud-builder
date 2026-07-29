@@ -67,6 +67,14 @@ The CLI triggers the workflow and downloads the IPA to `./dist/`.
 
 Download `builder.exe` from [Releases](https://github.com/MobAI-App/ios-builder/releases) and add to PATH.
 
+### Homebrew (macOS/Linux)
+
+```bash
+brew install mobai-app/tap/ios-builder
+```
+
+The formula is named `ios-builder`; the command it installs is `builder`.
+
 ### macOS/Linux/WSL
 
 ```bash
