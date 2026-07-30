@@ -1,9 +1,11 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -60,12 +62,34 @@ func loadConfig() (*config.Config, error) {
 	return cfg, nil
 }
 
+// stdinReader is shared so bytes buffered by one prompt are not lost by the next.
+var stdinReader = bufio.NewReader(os.Stdin)
+
+// promptString reads a line of free text from stdin.
+//
+// It deliberately avoids promptui here: promptui redraws the entire prompt on
+// every keystroke and its screen buffer assumes the rendered prompt occupies a
+// single terminal line. Pasting a value long enough to wrap breaks that
+// assumption, so each redraw strands a copy of the prompt on screen and the
+// visible text is garbled. Reading the line in the terminal's normal cooked
+// mode lets the terminal handle echo, wrapping and paste on its own.
 func promptString(label, defaultVal string) (string, error) {
-	prompt := promptui.Prompt{
-		Label:   label,
-		Default: defaultVal,
+	if defaultVal != "" {
+		fmt.Printf("%s [%s]: ", label, defaultVal)
+	} else {
+		fmt.Printf("%s: ", label)
 	}
-	return prompt.Run()
+
+	line, err := stdinReader.ReadString('\n')
+	if err != nil && !(err == io.EOF && line != "") {
+		return "", err
+	}
+
+	line = strings.TrimRight(line, "\r\n")
+	if line == "" {
+		return defaultVal, nil
+	}
+	return line, nil
 }
 
 var initCmd = &cobra.Command{
@@ -227,10 +251,7 @@ func runInit(cmd *cobra.Command, args []string) error {
 		if iosPath == "" && framework == "" {
 			fmt.Println("No iOS project detected in current directory.")
 			fmt.Println("If this is a hybrid app (React Native, Flutter, etc.),")
-			pathPrompt := promptui.Prompt{
-				Label: "Path to iOS folder (leave empty for root)",
-			}
-			iosPath, _ = pathPrompt.Run()
+			iosPath, _ = promptString("Path to iOS folder (leave empty for root)", "")
 		}
 	}
 

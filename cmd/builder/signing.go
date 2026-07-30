@@ -5,6 +5,8 @@ import (
 	"encoding/base64"
 	"fmt"
 	"os"
+	"path/filepath"
+	"strings"
 
 	"github.com/MobAI-App/ios-builder/internal/config"
 	"github.com/MobAI-App/ios-builder/internal/github"
@@ -42,6 +44,24 @@ func init() {
 	signingSetupCmd.Flags().StringP("profile", "p", "", "Path to .mobileprovision file")
 }
 
+// expandPath normalizes a path typed at a prompt. The shell never sees these,
+// so a leading ~ is not expanded, and dragging a file into the terminal can
+// wrap it in quotes and escape spaces.
+func expandPath(path string) string {
+	path = strings.TrimSpace(path)
+	path = strings.Trim(path, `"'`)
+	path = strings.ReplaceAll(path, `\ `, " ")
+
+	if path == "~" || strings.HasPrefix(path, "~/") {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return path
+		}
+		path = filepath.Join(home, strings.TrimPrefix(path, "~"))
+	}
+	return path
+}
+
 func runSigningSetup(cmd *cobra.Command, args []string) error {
 	cfg, err := loadConfig()
 	if err != nil {
@@ -56,34 +76,34 @@ func runSigningSetup(cmd *cobra.Command, args []string) error {
 	// Get certificate path
 	certPath, _ := cmd.Flags().GetString("certificate")
 	if certPath == "" {
-		prompt := promptui.Prompt{Label: "Path to .p12 certificate file"}
-		certPath, err = prompt.Run()
+		certPath, err = promptString("Path to .p12 certificate file", "")
 		if err != nil {
 			return err
 		}
 	}
 
 	// Validate certificate file
+	certPath = expandPath(certPath)
 	certData, err := os.ReadFile(certPath)
 	if err != nil {
-		return fmt.Errorf("failed to read certificate: %w", err)
+		return fmt.Errorf("failed to read certificate %s: %w", certPath, err)
 	}
 	fmt.Printf("Certificate: %s (%.1f KB)\n", certPath, float64(len(certData))/1024)
 
 	// Get provisioning profile path
 	profilePath, _ := cmd.Flags().GetString("profile")
 	if profilePath == "" {
-		prompt := promptui.Prompt{Label: "Path to .mobileprovision file"}
-		profilePath, err = prompt.Run()
+		profilePath, err = promptString("Path to .mobileprovision file", "")
 		if err != nil {
 			return err
 		}
 	}
 
 	// Validate profile file
+	profilePath = expandPath(profilePath)
 	profileData, err := os.ReadFile(profilePath)
 	if err != nil {
-		return fmt.Errorf("failed to read provisioning profile: %w", err)
+		return fmt.Errorf("failed to read provisioning profile %s: %w", profilePath, err)
 	}
 	fmt.Printf("Profile: %s (%.1f KB)\n", profilePath, float64(len(profileData))/1024)
 
