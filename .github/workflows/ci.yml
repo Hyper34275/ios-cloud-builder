@@ -13,7 +13,9 @@ jobs:
     strategy:
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
-        go: ['1.22', '1.23']
+        # go.mod requires 1.24, so anything below it silently downloads a 1.24
+        # toolchain and tests nothing new. These are the oldest and newest supported.
+        go: ['1.24', '1.26']
 
     steps:
       - uses: actions/checkout@v4
@@ -42,7 +44,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.22'
+          go-version: '1.26'
 
       - name: Check formatting
         run: |
@@ -52,10 +54,12 @@ jobs:
       - name: Run go vet
         run: go vet ./...
 
+      # golangci-lint cannot read export data from a Go newer than the one it was
+      # built with, so this version must keep pace with go-version above.
       - name: Run golangci-lint
-        uses: golangci/golangci-lint-action@v7
+        uses: golangci/golangci-lint-action@v9
         with:
-          version: v2.1.6
+          version: v2.12.2
           args: --timeout=5m
 
   build:
@@ -70,7 +74,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.22'
+          go-version: '1.26'
 
       - name: Build all platforms
         run: |
