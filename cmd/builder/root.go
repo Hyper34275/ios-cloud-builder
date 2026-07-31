@@ -381,8 +381,11 @@ func runInit(cmd *cobra.Command, args []string) error {
 
 	if buildErr == nil {
 		fmt.Println()
-		// Run build with default options (use signing if configured)
-		return runBuild(context.Background(), cfg, "dist", 30*time.Minute, false)
+		return runBuild(context.Background(), cfg, build.BuildOptions{
+			OutputDir: "dist",
+			Timeout:   30 * time.Minute,
+			Remote:    remoteName,
+		})
 	}
 
 	fmt.Println()
@@ -426,6 +429,7 @@ func init() {
 	iosBuildCmd.Flags().StringP("output", "o", "dist", "Output directory for IPA")
 	iosBuildCmd.Flags().Duration("timeout", 30*time.Minute, "Build timeout")
 	iosBuildCmd.Flags().Bool("unsigned", false, "Build unsigned IPA (skip code signing even if configured)")
+	iosBuildCmd.Flags().StringP("remote", "r", "origin", "Git remote to push the working-tree snapshot to")
 	iosCmd.AddCommand(iosBuildCmd)
 }
 
@@ -442,16 +446,22 @@ func runIOSBuild(cmd *cobra.Command, args []string) error {
 	outputDir, _ := cmd.Flags().GetString("output")
 	timeout, _ := cmd.Flags().GetDuration("timeout")
 	unsigned, _ := cmd.Flags().GetBool("unsigned")
+	remote, _ := cmd.Flags().GetString("remote")
 
 	ctx := cmd.Context()
 	if ctx == nil {
 		ctx = context.Background()
 	}
 
-	return runBuild(ctx, cfg, outputDir, timeout, unsigned)
+	return runBuild(ctx, cfg, build.BuildOptions{
+		OutputDir: outputDir,
+		Timeout:   timeout,
+		Unsigned:  unsigned,
+		Remote:    remote,
+	})
 }
 
-func runBuild(ctx context.Context, cfg *config.Config, outputDir string, timeout time.Duration, unsigned bool) error {
+func runBuild(ctx context.Context, cfg *config.Config, opts build.BuildOptions) error {
 	ghClient, err := getGitHubClient()
 	if err != nil {
 		return err
@@ -459,12 +469,7 @@ func runBuild(ctx context.Context, cfg *config.Config, outputDir string, timeout
 
 	coordinator := build.NewCoordinator(cfg, ghClient)
 
-	result, err := coordinator.Build(ctx, build.BuildOptions{
-		OutputDir: outputDir,
-		Timeout:   timeout,
-		Unsigned:  unsigned,
-	})
-
+	result, err := coordinator.Build(ctx, opts)
 	if err != nil {
 		return err
 	}

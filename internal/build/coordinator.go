@@ -14,6 +14,7 @@ import (
 
 	"github.com/MobAI-App/ios-builder/internal/config"
 	"github.com/MobAI-App/ios-builder/internal/github"
+	"github.com/MobAI-App/ios-builder/internal/snapshot"
 	"github.com/google/uuid"
 )
 
@@ -48,7 +49,8 @@ func NewCoordinator(cfg *config.Config, gh *github.Client) *Coordinator {
 type BuildOptions struct {
 	OutputDir string
 	Timeout   time.Duration
-	Unsigned  bool // Skip code signing even if configured
+	Unsigned  bool   // Skip code signing even if configured
+	Remote    string // Git remote to push the working-tree snapshot to
 }
 
 // BuildResult contains the result of a build
@@ -77,11 +79,27 @@ func (c *Coordinator) Build(ctx context.Context, opts BuildOptions) (*BuildResul
 	buildID := uuid.New().String()[:8]
 	c.progress.Start(buildID)
 
-	// Step 1: Trigger workflow
+	// Step 1: Snapshot the working tree so the build matches what's on disk
+	c.progress.Update(PhaseSnapshot, "Snapshotting working tree...")
+	sha, err := snapshot.Create(ctx, fmt.Sprintf("ios-builder snapshot %s", buildID))
+	if err != nil {
+		c.progress.Error(PhaseSnapshot, err)
+		return nil, fmt.Errorf("failed to snapshot working tree: %w", err)
+	}
+
+	ref := snapshot.Ref(buildID)
+	if err := snapshot.Push(ctx, opts.Remote, sha, ref); err != nil {
+		c.progress.Error(PhaseSnapshot, err)
+		return nil, fmt.Errorf("failed to push snapshot: %w", err)
+	}
+	defer c.deleteSnapshot(ctx, opts.Remote, ref)
+	c.progress.Complete(PhaseSnapshot, fmt.Sprintf("Pushed %s", sha[:7]))
+
+	// Step 2: Trigger workflow
 	c.progress.Update(PhaseTriggering, "Triggering GitHub Actions build...")
-	triggerTime := time.Now()
 	inputs := map[string]string{
-		"build_id": buildID,
+		"build_id":     buildID,
+		"snapshot_ref": ref,
 	}
 	// Add iOS-specific inputs if configured
 	if c.config.IOS.Path != "" {
@@ -109,30 +127,32 @@ func (c *Coordinator) Build(ctx context.Context, opts BuildOptions) (*BuildResul
 	}
 	c.progress.Complete(PhaseTriggering, "Workflow triggered")
 
-	// Step 2: Wait for workflow to start
+	// Step 3: Wait for workflow to start
 	c.progress.Update(PhaseWaitingStart, "Waiting for workflow to start...")
-	run, err := c.github.PollForWorkflowStart(ctx, c.config.GitHub.Owner, c.config.GitHub.Repo, WorkflowFile, triggerTime, 2*time.Minute)
+	run, err := c.github.PollForWorkflowStart(ctx, c.config.GitHub.Owner, c.config.GitHub.Repo, WorkflowFile, buildID, 2*time.Minute)
 	if err != nil {
 		c.progress.Error(PhaseWaitingStart, err)
 		return nil, fmt.Errorf("workflow failed to start: %w", err)
 	}
 	c.progress.Complete(PhaseWaitingStart, fmt.Sprintf("Workflow started (run #%d)", run.ID))
 
-	// Step 3: Wait for IPA artifact (don't wait for full job completion)
+	// Step 4: Wait for IPA artifact (don't wait for full job completion)
 	c.progress.Update(PhaseBuilding, "Building... (this may take several minutes)")
 	c.progress.SetWorkflowURL(run.HTMLURL)
 
 	// Poll for artifact availability instead of waiting for job completion
 	// This allows us to download the IPA as soon as it's uploaded, without waiting
 	// for cache save and other post-build steps
-	artifact, err := c.github.PollForArtifact(ctx, c.config.GitHub.Owner, c.config.GitHub.Repo, run.ID, IPAArtifactName, opts.Timeout)
+	artifact, err := c.github.PollForArtifact(ctx, c.config.GitHub.Owner, c.config.GitHub.Repo, run.ID, IPAArtifactName, opts.Timeout, func() {
+		c.showRunningStep(ctx, run.ID)
+	})
 	if err != nil {
 		c.progress.Error(PhaseBuilding, err)
 		return nil, fmt.Errorf("build failed: %w", err)
 	}
 	c.progress.Complete(PhaseBuilding, "Build completed successfully")
 
-	// Step 4: Download IPA artifact immediately
+	// Step 5: Download IPA artifact immediately
 	c.progress.Update(PhaseDownloading, "Downloading IPA artifact...")
 	ipaPath, ipaSize, err := c.downloadIPAArtifactByID(ctx, opts.OutputDir, artifact.ID, buildID)
 	if err != nil {
@@ -160,6 +180,24 @@ func (c *Coordinator) Build(ctx context.Context, opts BuildOptions) (*BuildResul
 		WorkflowURL: run.HTMLURL,
 		IPASize:     ipaSize,
 	}, nil
+}
+
+// showRunningStep renders the step the runner is currently executing. Progress
+// display is best-effort: a failed lookup must not abort the build.
+func (c *Coordinator) showRunningStep(ctx context.Context, runID int64) {
+	step, total, err := c.github.RunningStep(ctx, c.config.GitHub.Owner, c.config.GitHub.Repo, runID)
+	if err != nil || step == nil {
+		return
+	}
+
+	c.progress.UpdateStep(step.Name, step.Number, total, time.Since(step.StartedAt))
+}
+
+func (c *Coordinator) deleteSnapshot(ctx context.Context, remote, ref string) {
+	// The build context is already cancelled once Build returns on timeout.
+	if err := snapshot.Delete(context.WithoutCancel(ctx), remote, ref); err != nil {
+		c.progress.Warn(fmt.Sprintf("could not delete snapshot ref %s: %v", ref, err))
+	}
 }
 
 // downloadIPAArtifactByID downloads an artifact by its ID

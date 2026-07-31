@@ -45,10 +45,17 @@ builder init ────────────► Detects git remote (origin)
                           Creates builder.json
                           Optionally commits/pushes and runs build
 
-builder ios build ───────► Triggers workflow_dispatch
+builder ios build ───────► Snapshots working tree (git commit-tree)
+                                │
+                                ▼
+                          Pushes to refs/ios-builder/jobs/<build-id>
+                                │
+                                ▼
+                          Triggers workflow_dispatch with snapshot_ref
                                 │
                                 ▼
                           GitHub Actions (macos-14)
+                            ├─ Checks out the snapshot ref
                             ├─ Detects Flutter/native
                             ├─ Caches DerivedData
                             ├─ Builds unsigned IPA
@@ -56,6 +63,9 @@ builder ios build ───────► Triggers workflow_dispatch
                                 │
                                 ▼
                           Downloads IPA to ./dist/
+                                │
+                                ▼
+                          Deletes the snapshot ref
 
 builder dev flutter ─────► Connects to MobAI
                                 │
@@ -90,7 +100,8 @@ cmd/builder/         # CLI entrypoint (Cobra)
 internal/
   auth/              # GitHub OAuth device flow + keyring storage
   github/            # GitHub REST API (workflow dispatch, artifacts)
-  build/             # Build coordination (trigger + poll + download)
+  build/             # Build coordination (snapshot + trigger + poll + download)
+  snapshot/          # Working-tree snapshot as a throwaway commit on a remote ref
   workflow/          # Workflow template (embedded)
   config/            # builder.json management
   dev/               # Development session (Flutter/React Native hot reload)
@@ -103,6 +114,16 @@ internal/
 - **Keyring Storage**: Token stored via `go-keyring` (macOS Keychain, Windows Credential Manager, Linux SecretService)
 - **Interactive Init**: Prompts to commit/push and run first build
 - **Remote Selection**: `--remote` flag to use non-origin remotes
+- **Working-Tree Snapshot**: `ios build` builds what is on disk, including uncommitted and
+  untracked files. `git write-tree`/`commit-tree` against a temporary index produce a commit
+  parented on HEAD; the branch, index and working tree are never modified. The commit is pushed
+  to `refs/ios-builder/jobs/<build-id>`, which is outside `refs/heads` so it creates no branch
+  and fires no `push` events, and is deleted when the build finishes.
+- **Snapshot Exclusions**: `.gitignore` applies, so ignored files (`.env`, `GoogleService-Info.plist`,
+  local `*.xcconfig`) are absent from the build. Submodules are recorded as gitlinks, so a
+  submodule commit that only exists locally fails checkout on the runner.
+- **Run Correlation**: `run-name` carries the build ID so concurrent builds cannot adopt each
+  other's runs
 - **Flutter Detection**: Auto-detects Flutter projects, runs `flutter pub get`, uses `Runner` scheme
 - **DerivedData Caching**: Single static cache key for incremental builds
 - **MobAI Integration**: HTTP/WebSocket API for device control, app install, debug launch
@@ -126,7 +147,10 @@ internal/
 ## Workflow Features
 
 The embedded workflow template (`internal/workflow/templates/ios-build.yml`):
-- Triggered via `workflow_dispatch` with `build_id`, `ios_path`, `scheme`
+- Triggered via `workflow_dispatch` with `build_id`, `snapshot_ref`, `ios_path`, `scheme`
+- Dispatch runs the workflow from the **default branch**, so edits to the workflow file itself
+  only take effect once pushed there — unlike app sources, which come from the snapshot ref
+- Checks out `snapshot_ref` over the default-branch checkout when set
 - Runs on `macos-14`
 - Detects Flutter projects (checks for `pubspec.yaml`)
 - Caches DerivedData with static key for fast incremental builds

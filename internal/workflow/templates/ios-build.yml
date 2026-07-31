@@ -1,4 +1,5 @@
 name: iOS Build
+run-name: iOS Build ${{ inputs.build_id }}
 
 on:
   workflow_dispatch:
@@ -7,6 +8,11 @@ on:
         description: 'Unique build identifier'
         required: true
         type: string
+      snapshot_ref:
+        description: 'Ref holding the working-tree snapshot to build (empty builds this branch)'
+        required: false
+        type: string
+        default: ''
       ios_path:
         description: 'Path to iOS project (e.g., "ios" for React Native)'
         required: false
@@ -41,6 +47,18 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+
+      # The dispatch always runs the workflow from the default branch, so the
+      # sources come from a snapshot ref pushed by the CLI instead.
+      - name: Checkout working-tree snapshot
+        if: inputs.snapshot_ref != ''
+        env:
+          SNAPSHOT_REF: ${{ inputs.snapshot_ref }}
+        run: |
+          set -e
+          git fetch --depth=1 origin "+$SNAPSHOT_REF:refs/heads/snapshot"
+          git checkout --force snapshot
+          echo "Building $(git rev-parse --short HEAD)"
 
       - name: Setup Xcode
         uses: maxim-lobanov/setup-xcode@v1

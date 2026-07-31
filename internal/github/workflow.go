@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 )
 
@@ -40,7 +41,8 @@ func (c *Client) TriggerWorkflow(ctx context.Context, owner, repo, workflowFile 
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusNoContent {
-		return fmt.Errorf("failed to trigger workflow: status %d", resp.StatusCode)
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("failed to trigger workflow (status %d): %s", resp.StatusCode, strings.TrimSpace(string(body)))
 	}
 
 	return nil
@@ -70,24 +72,26 @@ func (c *Client) ListWorkflowRuns(ctx context.Context, owner, repo, workflowFile
 	return resp.WorkflowRuns, nil
 }
 
-// FindLatestWorkflowRun finds the most recent workflow run created after a given time
-func (c *Client) FindLatestWorkflowRun(ctx context.Context, owner, repo, workflowFile string, after time.Time) (*WorkflowRun, error) {
+// FindWorkflowRunByBuildID finds the run whose name carries the build ID. The
+// workflow puts the ID in run-name so concurrent builds cannot pick up each
+// other's runs.
+func (c *Client) FindWorkflowRunByBuildID(ctx context.Context, owner, repo, workflowFile, buildID string) (*WorkflowRun, error) {
 	runs, err := c.ListWorkflowRuns(ctx, owner, repo, workflowFile)
 	if err != nil {
 		return nil, err
 	}
 
 	for i := range runs {
-		if runs[i].CreatedAt.After(after) {
+		if strings.Contains(runs[i].Name, buildID) {
 			return &runs[i], nil
 		}
 	}
 
-	return nil, fmt.Errorf("no workflow run found after %v", after)
+	return nil, fmt.Errorf("no workflow run found for build %s", buildID)
 }
 
-// PollForWorkflowStart polls until a new workflow run appears after triggerTime
-func (c *Client) PollForWorkflowStart(ctx context.Context, owner, repo, workflowFile string, triggerTime time.Time, timeout time.Duration) (*WorkflowRun, error) {
+// PollForWorkflowStart polls until the run for buildID appears
+func (c *Client) PollForWorkflowStart(ctx context.Context, owner, repo, workflowFile, buildID string, timeout time.Duration) (*WorkflowRun, error) {
 	deadline := time.Now().Add(timeout)
 
 	for {
@@ -95,7 +99,7 @@ func (c *Client) PollForWorkflowStart(ctx context.Context, owner, repo, workflow
 			return nil, fmt.Errorf("timed out waiting for workflow to start")
 		}
 
-		run, err := c.FindLatestWorkflowRun(ctx, owner, repo, workflowFile, triggerTime)
+		run, err := c.FindWorkflowRunByBuildID(ctx, owner, repo, workflowFile, buildID)
 		if err == nil {
 			return run, nil
 		}
@@ -106,6 +110,37 @@ func (c *Client) PollForWorkflowStart(ctx context.Context, owner, repo, workflow
 		case <-time.After(workflowStartPollInterval):
 		}
 	}
+}
+
+// ListRunJobs lists the jobs and their steps for a workflow run
+func (c *Client) ListRunJobs(ctx context.Context, owner, repo string, runID int64) ([]Job, error) {
+	path := fmt.Sprintf("/repos/%s/%s/actions/runs/%d/jobs", owner, repo, runID)
+
+	var resp JobsResponse
+	if err := c.do(ctx, path, &resp); err != nil {
+		return nil, fmt.Errorf("failed to list run jobs: %w", err)
+	}
+
+	return resp.Jobs, nil
+}
+
+// RunningStep returns the step currently executing in a run, and the total
+// number of steps in its job. It returns nil when no step is running.
+func (c *Client) RunningStep(ctx context.Context, owner, repo string, runID int64) (*JobStep, int, error) {
+	jobs, err := c.ListRunJobs(ctx, owner, repo, runID)
+	if err != nil {
+		return nil, 0, err
+	}
+
+	for _, job := range jobs {
+		for i := range job.Steps {
+			if job.Steps[i].Status == "in_progress" {
+				return &job.Steps[i], len(job.Steps), nil
+			}
+		}
+	}
+
+	return nil, 0, nil
 }
 
 // ListRunArtifacts lists all artifacts for a workflow run
@@ -207,8 +242,8 @@ func (c *Client) FindArtifactByName(ctx context.Context, owner, repo string, run
 
 // PollForArtifact polls until an artifact with the given name appears in a workflow run.
 // This allows downloading the artifact as soon as it's uploaded, without waiting for the
-// entire workflow to complete.
-func (c *Client) PollForArtifact(ctx context.Context, owner, repo string, runID int64, artifactName string, timeout time.Duration) (*Artifact, error) {
+// entire workflow to complete. onPoll, if non-nil, runs once per attempt.
+func (c *Client) PollForArtifact(ctx context.Context, owner, repo string, runID int64, artifactName string, timeout time.Duration, onPoll func()) (*Artifact, error) {
 	deadline := time.Now().Add(timeout)
 	// Use fixed 5s interval (no backoff) to catch artifact quickly after upload
 	const artifactPollInterval = 5 * time.Second
@@ -231,6 +266,10 @@ func (c *Client) PollForArtifact(ctx context.Context, owner, repo string, runID 
 		}
 		if run.Status == "completed" && run.Conclusion != "success" {
 			return nil, fmt.Errorf("workflow failed with conclusion: %s", run.Conclusion)
+		}
+
+		if onPoll != nil {
+			onPoll()
 		}
 
 		select {

@@ -12,6 +12,7 @@ import (
 type Phase string
 
 const (
+	PhaseSnapshot     Phase = "snapshot"
 	PhaseTriggering   Phase = "trigger"
 	PhaseWaitingStart Phase = "waiting"
 	PhaseBuilding     Phase = "building"
@@ -26,6 +27,7 @@ type PhaseInfo struct {
 }
 
 var phaseInfos = map[Phase]PhaseInfo{
+	PhaseSnapshot:     {Name: "Snapshot", Icon: "📦"},
 	PhaseTriggering:   {Name: "Trigger", Icon: "🚀"},
 	PhaseWaitingStart: {Name: "Start", Icon: "⏳"},
 	PhaseBuilding:     {Name: "Build", Icon: "🔨"},
@@ -103,6 +105,24 @@ func (p *Progress) Error(phase Phase, err error) {
 	if p.workflowURL != "" {
 		fmt.Fprintf(p.writer, "   Logs: %s\n", p.workflowURL)
 	}
+}
+
+// UpdateStep displays the workflow step currently running on the runner
+func (p *Progress) UpdateStep(name string, number, total int, elapsed time.Duration) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	info := phaseInfos[PhaseBuilding]
+	fmt.Fprintf(p.writer, "\r\033[K%s  %s: %s (%d/%d) · %s",
+		info.Icon, info.Name, name, number, total, elapsed.Round(time.Second))
+}
+
+// Warn prints a non-fatal problem without interrupting the build
+func (p *Progress) Warn(message string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	fmt.Fprintf(p.writer, "\r\033[K⚠️  %s\n", message)
 }
 
 // SetWorkflowURL sets the workflow URL for error messages
