@@ -17,10 +17,10 @@ func TestExpandPath(t *testing.T) {
 		in   string
 		want string
 	}{
-		{"tilde", "~/Desktop/my-cert.p12", filepath.Join(home, "Desktop/my-cert.p12")},
+		{"tilde", "~/Desktop/my-cert.p12", filepath.Join(home, "Desktop", "my-cert.p12")},
 		{"bare tilde", "~", home},
 		{"trailing whitespace", "  ~/cert.p12 ", filepath.Join(home, "cert.p12")},
-		{"double quoted", `"~/My Certs/cert.p12"`, filepath.Join(home, "My Certs/cert.p12")},
+		{"double quoted", `"~/My Certs/cert.p12"`, filepath.Join(home, "My Certs", "cert.p12")},
 		{"single quoted", `'/tmp/cert.p12'`, "/tmp/cert.p12"},
 		{"escaped spaces", `/tmp/My\ Certs/cert.p12`, "/tmp/My Certs/cert.p12"},
 		{"absolute unchanged", "/tmp/cert.p12", "/tmp/cert.p12"},

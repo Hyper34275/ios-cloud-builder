@@ -81,7 +81,7 @@ func promptString(label, defaultVal string) (string, error) {
 	}
 
 	line, err := stdinReader.ReadString('\n')
-	if err != nil && !(err == io.EOF && line != "") {
+	if err != nil && (err != io.EOF || line == "") {
 		return "", err
 	}
 
