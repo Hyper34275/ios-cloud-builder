@@ -23,3 +23,9 @@ func GetTemplate(name string) ([]byte, error) {
 func GetWorkflowTemplate() ([]byte, error) {
 	return GetTemplate("ios-build.yml")
 }
+
+// GetShareWorkflowTemplate returns the workflow that builds for the simulator
+// and then makes that simulator usable from the MobAI app.
+func GetShareWorkflowTemplate() ([]byte, error) {
+	return GetTemplate("ios-share.yml")
+}

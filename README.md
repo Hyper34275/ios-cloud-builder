@@ -9,6 +9,7 @@ Builder is a CLI tool for iOS development without a Mac. It uses GitHub Actions 
 ## Features
 
 - **Build from anywhere**: Build any iOS app (native, Flutter, React Native) via GitHub Actions
+- **Try it on a simulator**: Use your build on an iOS simulator from Windows or Linux
 - **Flutter & React Native dev tools**: Hot reload on real iOS devices from Windows/Linux
 - **Simple setup**: One command to add the workflow to your repo
 - **Code signing**: Optional signing with your certificate and provisioning profile
@@ -50,6 +51,25 @@ builder ios build
 ```
 
 The CLI triggers the workflow and downloads the IPA to `./dist/`.
+
+### 4. Try it on a simulator (optional)
+
+```bash
+builder ios share
+```
+
+Builds the working tree for the iOS simulator and makes that simulator usable
+from the [MobAI](https://mobai.run) app, so you can tap through a build without
+a Mac. It shows up under CI Devices, stays available while you are using it, and
+closes when you release it there or leave it unused (30 minutes by default, use
+`--duration` to change).
+
+Needs MobAI Pro and a `MOBAI_API_KEY` repository secret. Create the key in the
+MobAI app under Account → API Keys, then:
+
+```bash
+gh secret set MOBAI_API_KEY
+```
 
 ## Supported Frameworks
 

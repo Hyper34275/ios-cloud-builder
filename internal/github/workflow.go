@@ -48,6 +48,26 @@ func (c *Client) TriggerWorkflow(ctx context.Context, owner, repo, workflowFile 
 	return nil
 }
 
+// CancelWorkflowRun requests cancellation of a run. Best-effort: a run that has
+// already finished returns 409, which is treated as success (nothing to cancel).
+func (c *Client) CancelWorkflowRun(ctx context.Context, owner, repo string, runID int64) error {
+	path := fmt.Sprintf("/repos/%s/%s/actions/runs/%d/cancel", owner, repo, runID)
+
+	resp, err := c.request(ctx, "POST", path, nil)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	// 202 Accepted on success; 409 Conflict when the run already completed.
+	if resp.StatusCode != http.StatusAccepted && resp.StatusCode != http.StatusConflict {
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("failed to cancel run (status %d): %s", resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+
+	return nil
+}
+
 // GetWorkflowRun retrieves a specific workflow run
 func (c *Client) GetWorkflowRun(ctx context.Context, owner, repo string, runID int64) (*WorkflowRun, error) {
 	path := fmt.Sprintf("/repos/%s/%s/actions/runs/%d", owner, repo, runID)

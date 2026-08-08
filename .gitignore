@@ -50,3 +50,6 @@ temp/
 # Debug files
 debug/
 __debug_bin*
+
+# built binary
+/builder

@@ -8,8 +8,10 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/MobAI-App/ios-builder/internal/auth"
@@ -299,6 +301,18 @@ func runInit(cmd *cobra.Command, args []string) error {
 	}
 	fmt.Printf("  Created: %s\n", workflowPath)
 
+	// Ship the share workflow next to the build one so `builder ios share` needs
+	// no extra setup. Dispatch-only, so it costs nothing until used.
+	shareContent, err := workflow.GetShareWorkflowTemplate()
+	if err != nil {
+		return fmt.Errorf("failed to get simulator workflow template: %w", err)
+	}
+	sharePath := filepath.Join(workflowDir, "ios-share.yml")
+	if err := os.WriteFile(sharePath, shareContent, 0644); err != nil {
+		return fmt.Errorf("failed to write simulator workflow file: %w", err)
+	}
+	fmt.Printf("  Created: %s\n", sharePath)
+
 	// Save config
 	cfg := &config.Config{
 		Project:  projectName,
@@ -342,7 +356,7 @@ func runInit(cmd *cobra.Command, args []string) error {
 		fmt.Println("Committing and pushing...")
 
 		// Git add
-		addCmd := exec.Command("git", "add", ".github/workflows/ios-build.yml", "builder.json")
+		addCmd := exec.Command("git", "add", ".github/workflows/ios-build.yml", ".github/workflows/ios-share.yml", "builder.json")
 		if output, err := addCmd.CombinedOutput(); err != nil {
 			fmt.Printf("  Warning: git add failed: %s\n", strings.TrimSpace(string(output)))
 		} else {
@@ -408,6 +422,20 @@ var iosBuildCmd = &cobra.Command{
 	RunE:  runIOSBuild,
 }
 
+var iosShareCmd = &cobra.Command{
+	Use:   "share",
+	Short: "Try this build on a simulator, from the MobAI app",
+	Long: `Builds the working tree for the iOS simulator on GitHub Actions and makes that
+simulator usable from the MobAI app, so a build can be tried by hand without a
+Mac.
+
+The simulator appears in MobAI under CI Devices. It stays available while it is
+being used and closes once it is released there, or left unused for a while.
+
+Requires MobAI Pro and a MOBAI_API_KEY secret in the repository.`,
+	RunE: runIOSShare,
+}
+
 func init() {
 	// Root command setup
 	cobra.OnInitialize(initConfig)
@@ -431,6 +459,11 @@ func init() {
 	iosBuildCmd.Flags().Bool("unsigned", false, "Build unsigned IPA (skip code signing even if configured)")
 	iosBuildCmd.Flags().StringP("remote", "r", "origin", "Git remote to push the working-tree snapshot to")
 	iosCmd.AddCommand(iosBuildCmd)
+
+	// iOS share command flags
+	iosShareCmd.Flags().Duration("duration", 30*time.Minute, "How long the simulator stays available while unused")
+	iosShareCmd.Flags().StringP("remote", "r", "origin", "Git remote to push the working-tree snapshot to")
+	iosCmd.AddCommand(iosShareCmd)
 }
 
 func runIOSBuild(cmd *cobra.Command, args []string) error {
@@ -459,6 +492,48 @@ func runIOSBuild(cmd *cobra.Command, args []string) error {
 		Unsigned:  unsigned,
 		Remote:    remote,
 	})
+}
+
+func runIOSShare(cmd *cobra.Command, args []string) error {
+	cfg, err := loadConfig()
+	if err != nil {
+		return err
+	}
+	if err := cfg.Validate(); err != nil {
+		return fmt.Errorf("invalid configuration: %w", err)
+	}
+
+	duration, _ := cmd.Flags().GetDuration("duration")
+	remote, _ := cmd.Flags().GetString("remote")
+
+	ctx := cmd.Context()
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	// Ctrl+C cancels ctx; Share cancels the run if interrupted before the sim is
+	// shared. After that it has returned and the job outlives the command.
+	ctx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	ghClient, err := getGitHubClient()
+	if err != nil {
+		return err
+	}
+	result, err := build.NewCoordinator(cfg, ghClient).Share(ctx, build.ShareOptions{
+		Duration: duration,
+		Remote:   remote,
+	})
+	if err != nil {
+		return err
+	}
+
+	fmt.Println()
+	fmt.Println("Simulator ready. Open MobAI and find it under CI Devices.")
+	fmt.Println("It closes when you stop its bridge there, or after being left unused.")
+	fmt.Printf("Workflow: %s\n", result.WorkflowURL)
+
+	return nil
 }
 
 func runBuild(ctx context.Context, cfg *config.Config, opts build.BuildOptions) error {
