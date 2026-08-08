@@ -120,6 +120,10 @@ builder init                  # Set up workflow in current repo
 builder ios build             # Trigger build and download IPA to ./dist/
 builder ios build --unsigned  # Build without code signing (if signing is configured)
 
+# Simulator (requires MobAI Pro)
+builder ios share             # Try the build on a simulator in the MobAI app
+builder ios share --duration 1h  # Keep it available longer while unused
+
 # Development (requires MobAI)
 builder dev flutter           # Flutter hot reload with file watching
 builder dev flutter --no-watch  # Disable automatic file watching
