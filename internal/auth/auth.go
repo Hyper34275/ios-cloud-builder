@@ -62,6 +62,7 @@ func Login(ctx context.Context) (*Token, error) {
 	if err != nil {
 		return nil, err
 	}
+	fmt.Println("Authorized. Saving token...")
 
 	if err := storeToken(token.AccessToken); err != nil {
 		return nil, fmt.Errorf("failed to store token: %w", err)
@@ -75,31 +76,29 @@ var ErrNotAuthenticated = errors.New("not authenticated")
 
 // GetToken retrieves the stored GitHub token from the OS keychain or file storage.
 func GetToken() (string, error) {
-	token, err := keyring.Get(keyringService, keyringUser)
+	// Skip the keyring on Linux/WSL - it needs a desktop Secret Service that
+	// is usually absent there, and the call can hang.
+	if runtime.GOOS != "linux" {
+		if token, err := keyring.Get(keyringService, keyringUser); err == nil {
+			return token, nil
+		}
+	}
+	token, err := getTokenFromFile()
 	if err == nil {
 		return token, nil
 	}
-	if err != keyring.ErrNotFound {
-		token, fileErr := getTokenFromFile()
-		if fileErr == nil {
-			return token, nil
-		}
-		if fileErr == ErrNotAuthenticated {
-			return "", ErrNotAuthenticated
-		}
-		return "", fmt.Errorf("failed to get token: %w", fileErr)
+	if errors.Is(err, ErrNotAuthenticated) {
+		return "", ErrNotAuthenticated
 	}
-	token, fileErr := getTokenFromFile()
-	if fileErr == nil {
-		return token, nil
-	}
-	return "", ErrNotAuthenticated
+	return "", fmt.Errorf("failed to get token: %w", err)
 }
 
 // Logout removes the stored GitHub token from keychain and file storage.
 func Logout() error {
-	if err := keyring.Delete(keyringService, keyringUser); err != nil && err != keyring.ErrNotFound {
-		fmt.Fprintf(os.Stderr, "Warning: failed to delete from keyring: %v\n", err)
+	if runtime.GOOS != "linux" {
+		if err := keyring.Delete(keyringService, keyringUser); err != nil && err != keyring.ErrNotFound {
+			fmt.Fprintf(os.Stderr, "Warning: failed to delete from keyring: %v\n", err)
+		}
 	}
 	if err := deleteTokenFile(); err != nil {
 		fmt.Fprintf(os.Stderr, "Warning: failed to delete token file: %v\n", err)
@@ -107,13 +106,17 @@ func Logout() error {
 	return nil
 }
 
-// storeToken stores the token, preferring keyring but falling back to file on Linux/WSL.
+// storeToken stores the token in the OS keychain, or a file on Linux/WSL.
+//
+// The keyring needs a desktop Secret Service, which WSL and headless Linux
+// lack; there the call can hang rather than error, so it is skipped entirely.
 func storeToken(token string) error {
-	err := keyring.Set(keyringService, keyringUser, token)
-	if err == nil {
+	if runtime.GOOS == "linux" {
+		return storeTokenToFile(token)
+	}
+	if err := keyring.Set(keyringService, keyringUser, token); err == nil {
 		return nil
 	}
-
 	return storeTokenToFile(token)
 }
 
