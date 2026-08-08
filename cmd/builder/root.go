@@ -18,6 +18,7 @@ import (
 	"github.com/MobAI-App/ios-builder/internal/build"
 	"github.com/MobAI-App/ios-builder/internal/config"
 	"github.com/MobAI-App/ios-builder/internal/github"
+	"github.com/MobAI-App/ios-builder/internal/update"
 	"github.com/MobAI-App/ios-builder/internal/workflow"
 	"github.com/manifoldco/promptui"
 	"github.com/spf13/cobra"
@@ -436,11 +437,21 @@ Requires MobAI Pro and a MOBAI_API_KEY secret in the repository.`,
 	RunE: runIOSShare,
 }
 
+var updateCmd = &cobra.Command{
+	Use:   "update",
+	Short: "Update builder to the latest release",
+	Long:  "Checks GitHub for a newer release and, if there is one, replaces this binary with it. Works on macOS, Windows, and Linux.",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		return update.Run(cmd.Context(), version)
+	},
+}
+
 func init() {
 	// Root command setup
 	cobra.OnInitialize(initConfig)
 	rootCmd.PersistentFlags().BoolVarP(&verbose, "verbose", "v", false, "Enable verbose output")
 	rootCmd.AddCommand(initCmd)
+	rootCmd.AddCommand(updateCmd)
 	rootCmd.AddCommand(iosCmd)
 	rootCmd.AddCommand(authCmd)
 	rootCmd.AddCommand(signingCmd)
