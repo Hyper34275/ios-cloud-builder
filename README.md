@@ -115,6 +115,7 @@ go build -o builder ./cmd/builder
 # Setup
 builder auth github           # Authenticate with GitHub
 builder init                  # Set up workflow in current repo
+builder update                # Update builder to the latest release
 
 # Building
 builder ios build             # Trigger build and download IPA to ./dist/
