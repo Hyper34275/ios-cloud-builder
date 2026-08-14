@@ -36,12 +36,19 @@ type Coordinator struct {
 	progress *Progress
 }
 
-// NewCoordinator creates a new build coordinator
+// NewCoordinator creates a new build coordinator that reports progress on stdout
 func NewCoordinator(cfg *config.Config, gh *github.Client) *Coordinator {
+	return NewCoordinatorWithOutput(cfg, gh, os.Stdout)
+}
+
+// NewCoordinatorWithOutput creates a coordinator that renders progress to w.
+// Callers embedding the build flow in another program pass their own writer, or
+// io.Discard to silence it.
+func NewCoordinatorWithOutput(cfg *config.Config, gh *github.Client, w io.Writer) *Coordinator {
 	return &Coordinator{
 		config:   cfg,
 		github:   gh,
-		progress: NewProgress(os.Stdout),
+		progress: NewProgress(w),
 	}
 }
 
