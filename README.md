@@ -134,6 +134,7 @@ builder dev flutter --skip-install --bundle-id <id>  # Use already installed app
 builder dev rn --metro-port 8082  # Use custom Metro port
 
 # Code signing
+builder signing csr           # Create a certificate signing request (no Mac needed)
 builder signing setup         # Set up code signing secrets
 ```
 
@@ -205,16 +206,57 @@ hostname.exe
 
 ## Code Signing
 
-By default, builds are unsigned. To enable code signing:
+By default, builds are unsigned. Signed builds need a signing certificate and a
+provisioning profile — and despite what many guides claim, **you do not need a
+Mac to create either one**. The `.p12` certificate is normally created through
+Keychain Access, but Builder does the same thing itself: it generates the
+private key and certificate signing request, and assembles the `.p12` from the
+certificate Apple issues.
+
+You need a paid [Apple Developer Program](https://developer.apple.com/programs/)
+membership — the portal only issues certificates to paid accounts. (Without one,
+build unsigned and let [MobAI](https://mobai.run) re-sign on install with a free
+Apple ID.)
+
+### 1. Create a certificate signing request
 
 ```bash
-builder signing setup
+builder signing csr
 ```
 
-This uploads your certificate and provisioning profile to GitHub Secrets:
+This asks for your name and email, stores a private key in Builder's config
+directory (`~/.config/ios-builder/` — outside the repository, so it can never
+end up in a commit or build snapshot), and writes `ios-signing.csr`.
+
+### 2. Create the certificate
+
+1. Go to [Certificates](https://developer.apple.com/account/resources/certificates/add) on the Apple Developer portal
+2. Choose **Apple Development** (installs on registered devices) or **Apple Distribution** (App Store/Ad Hoc)
+3. Upload `ios-signing.csr` and download the resulting `.cer` file
+
+### 3. Create a provisioning profile
+
+On the portal:
+
+1. **Identifiers** → register an App ID matching your app's bundle identifier
+2. **Devices** → register your device's UDID (shown in [MobAI](https://mobai.run) when the device is connected; on Windows, iTunes shows it when you click the serial number on the device page)
+3. **Profiles** → create an **iOS App Development** (or Ad Hoc) profile, select your App ID, certificate, and devices, then download the `.mobileprovision` file
+
+### 4. Upload the signing secrets
+
+```bash
+builder signing setup --certificate ios_development.cer --profile MyApp.mobileprovision
+```
+
+Builder assembles the `.p12` from the `.cer` and the stored key, and uploads
+the signing material to GitHub Secrets:
 - `IOS_CERTIFICATE` - Base64-encoded .p12 file
 - `IOS_CERTIFICATE_PASSWORD` - Certificate password
 - `IOS_PROVISIONING_PROFILE` - Base64-encoded .mobileprovision file
+
+If you already have a `.p12` (for example, exported from a Mac's Keychain
+Access), pass it directly — `builder signing setup --certificate cert.p12` —
+and you'll be prompted for its password instead.
 
 Once configured, `builder ios build` will produce signed IPAs. Use `--unsigned` to skip signing.
 
