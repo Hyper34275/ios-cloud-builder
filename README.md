@@ -248,8 +248,10 @@ On the portal:
 builder signing setup --certificate ios_development.cer --profile MyApp.mobileprovision
 ```
 
-Builder assembles the `.p12` from the `.cer` and the stored key, and uploads
-the signing material to GitHub Secrets:
+Builder assembles the `.p12` from the `.cer` and the stored key, protects it
+with a password you choose, and saves it to `~/.config/ios-builder/signing.p12`
+— it's your signing identity, reusable with other tools (Sideloadly, a Mac,
+re-running setup). It then uploads the signing material to GitHub Secrets:
 - `IOS_CERTIFICATE` - Base64-encoded .p12 file
 - `IOS_CERTIFICATE_PASSWORD` - Certificate password
 - `IOS_PROVISIONING_PROFILE` - Base64-encoded .mobileprovision file

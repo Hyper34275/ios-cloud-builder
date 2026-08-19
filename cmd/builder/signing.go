@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"crypto/rand"
 	"encoding/base64"
 	"fmt"
 	"os"
@@ -152,14 +151,6 @@ func isPortalCertificate(path string) bool {
 	return false
 }
 
-func randomPassword() (string, error) {
-	buf := make([]byte, 18)
-	if _, err := rand.Read(buf); err != nil {
-		return "", err
-	}
-	return base64.RawURLEncoding.EncodeToString(buf), nil
-}
-
 // expandPath normalizes a path typed at a prompt. The shell never sees these,
 // so a leading ~ is not expanded, and dragging a file into the terminal can
 // wrap it in quotes and escape spaces.
@@ -238,15 +229,28 @@ func runSigningSetup(cmd *cobra.Command, args []string) error {
 			}
 			return fmt.Errorf("failed to read signing key: %w", err)
 		}
-		password, err = randomPassword()
+		passwordPrompt := promptui.Prompt{
+			Label: "Password to protect the .p12",
+			Mask:  '*',
+		}
+		password, err = passwordPrompt.Run()
 		if err != nil {
-			return fmt.Errorf("failed to generate password: %w", err)
+			return fmt.Errorf("failed to read password: %w", err)
+		}
+		if password == "" {
+			return fmt.Errorf("a password is required")
 		}
 		certData, err = signing.BuildP12(keyPEM, certData, password)
 		if err != nil {
 			return err
 		}
-		fmt.Println("Assembled .p12 from certificate and signing key")
+		// Keep the .p12 next to the key: it is the reusable signing identity
+		// (Sideloadly, another machine, re-running setup), not a throwaway.
+		p12Path := filepath.Join(filepath.Dir(keyPath), "signing.p12")
+		if err := os.WriteFile(p12Path, certData, 0600); err != nil {
+			return fmt.Errorf("failed to write .p12: %w", err)
+		}
+		fmt.Printf("Assembled .p12 and saved it to %s\n", p12Path)
 	} else {
 		// Get certificate password (no echo)
 		passwordPrompt := promptui.Prompt{
