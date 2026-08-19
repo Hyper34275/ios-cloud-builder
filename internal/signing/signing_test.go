@@ -89,7 +89,8 @@ func TestBuildP12Roundtrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("pkcs12.Decode: %v", err)
 	}
-	if !gotKey.(*rsa.PrivateKey).Equal(key) {
+	rsaKey, ok := gotKey.(*rsa.PrivateKey)
+	if !ok || !rsaKey.Equal(key) {
 		t.Errorf("decoded key does not match original")
 	}
 	if gotCert.Subject.CommonName != "Apple Development: Jane Developer" {
