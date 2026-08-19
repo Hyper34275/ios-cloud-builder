@@ -224,9 +224,10 @@ Apple ID.)
 builder signing csr
 ```
 
-This asks for your name and email, stores a private key in Builder's config
-directory (`~/.config/ios-builder/` — outside the repository, so it can never
-end up in a commit or build snapshot), and writes `ios-signing.csr`.
+This asks for your name and email and writes two files to the current
+directory: `ios-signing.key` (your private key) and `ios-signing.csr`. Keep
+the key wherever suits you — just don't commit it (add it to `.gitignore`;
+gitignored files are also excluded from build snapshots).
 
 ### 2. Create the certificate
 
@@ -245,13 +246,13 @@ On the portal:
 ### 4. Upload the signing secrets
 
 ```bash
-builder signing setup --certificate ios_development.cer --profile MyApp.mobileprovision
+builder signing setup --certificate ios_development.cer --key ios-signing.key --profile MyApp.mobileprovision
 ```
 
-Builder assembles the `.p12` from the `.cer` and the stored key, protects it
-with a password you choose, and saves it to `~/.config/ios-builder/signing.p12`
-— it's your signing identity, reusable with other tools (Sideloadly, a Mac,
-re-running setup). It then uploads the signing material to GitHub Secrets:
+Builder assembles `ios-signing.p12` from the `.cer` and your key, protected
+with a password you choose — it's your signing identity, reusable with other
+tools (Sideloadly, a Mac, re-running setup), so keep it and don't commit it.
+It then uploads the signing material to GitHub Secrets:
 - `IOS_CERTIFICATE` - Base64-encoded .p12 file
 - `IOS_CERTIFICATE_PASSWORD` - Certificate password
 - `IOS_PROVISIONING_PROFILE` - Base64-encoded .mobileprovision file

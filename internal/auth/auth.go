@@ -120,8 +120,8 @@ func storeToken(token string) error {
 	return storeTokenToFile(token)
 }
 
-// ConfigDir returns the path to ~/.config/ios-builder/
-func ConfigDir() (string, error) {
+// getConfigDir returns the path to ~/.config/ios-builder/
+func getConfigDir() (string, error) {
 	var configBase string
 	if runtime.GOOS == "windows" {
 		configBase = os.Getenv("APPDATA")
@@ -147,7 +147,7 @@ func ConfigDir() (string, error) {
 
 // storeTokenToFile saves the token to ~/.config/ios-builder/token with restricted permissions.
 func storeTokenToFile(token string) error {
-	configDir, err := ConfigDir()
+	configDir, err := getConfigDir()
 	if err != nil {
 		return fmt.Errorf("failed to get config directory: %w", err)
 	}
@@ -163,7 +163,7 @@ func storeTokenToFile(token string) error {
 
 // getTokenFromFile reads the token from ~/.config/ios-builder/token.
 func getTokenFromFile() (string, error) {
-	configDir, err := ConfigDir()
+	configDir, err := getConfigDir()
 	if err != nil {
 		return "", fmt.Errorf("failed to get config directory: %w", err)
 	}
@@ -184,7 +184,7 @@ func getTokenFromFile() (string, error) {
 
 // deleteTokenFile removes the token file.
 func deleteTokenFile() error {
-	configDir, err := ConfigDir()
+	configDir, err := getConfigDir()
 	if err != nil {
 		return err
 	}
