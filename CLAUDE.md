@@ -101,6 +101,7 @@ internal/
   auth/              # GitHub OAuth device flow + keyring storage
   github/            # GitHub REST API (workflow dispatch, artifacts)
   build/             # Build coordination (snapshot + trigger + poll + download)
+  signing/           # CSR generation and .p12 assembly (signing without a Mac)
   snapshot/          # Working-tree snapshot as a throwaway commit on a remote ref
   workflow/          # Workflow template (embedded)
   config/            # builder.json management

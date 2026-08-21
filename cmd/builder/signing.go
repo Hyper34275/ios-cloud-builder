@@ -10,6 +10,7 @@ import (
 
 	"github.com/MobAI-App/ios-builder/internal/config"
 	"github.com/MobAI-App/ios-builder/internal/github"
+	"github.com/MobAI-App/ios-builder/internal/signing"
 	"github.com/manifoldco/promptui"
 	"github.com/spf13/cobra"
 )
@@ -24,9 +25,14 @@ var signingSetupCmd = &cobra.Command{
 	Short: "Set up code signing for iOS builds",
 	Long: `Uploads your iOS signing certificate and provisioning profile to GitHub Secrets.
 
+The certificate can be either:
+- A .p12 file (exported from Keychain Access on a Mac)
+- A .cer file downloaded from the Apple Developer portal, together with the
+  private key from 'builder signing csr' (--key) — the .p12 is then assembled
+  locally, so no Mac is needed at any point
+
 This command will:
-- Read your .p12 certificate file
-- Read your .mobileprovision provisioning profile
+- Read your certificate and .mobileprovision provisioning profile
 - Base64 encode and encrypt them
 - Upload them as GitHub repository secrets:
   - IOS_CERTIFICATE
@@ -37,11 +43,177 @@ After setup, builds will be signed automatically.`,
 	RunE: runSigningSetup,
 }
 
+var signingCSRCmd = &cobra.Command{
+	Use:   "csr",
+	Short: "Create a certificate signing request (no Mac needed)",
+	Long: `Creates a private key and a certificate signing request (CSR) for the
+Apple Developer portal — the same thing Keychain Access does on a Mac.
+
+Writes ios-signing.key and ios-signing.csr to the current directory. Keep the
+key private and do not commit it. Upload the CSR at developer.apple.com to
+create a certificate, then run:
+'builder signing p12 --certificate <downloaded>.cer --key ios-signing.key'.`,
+	RunE: runSigningCSR,
+}
+
+var signingP12Cmd = &cobra.Command{
+	Use:   "p12",
+	Short: "Assemble a .p12 from a private key and an Apple certificate",
+	Long: `Combines the private key from 'builder signing csr' with the certificate
+downloaded from the Apple Developer portal into a password-protected .p12 —
+the same file Keychain Access exports on a Mac.
+
+The .p12 works anywhere a Keychain-exported one does: 'builder signing setup',
+Sideloadly, AltStore, or importing it on a Mac.`,
+	RunE: runSigningP12,
+}
+
 func init() {
 	signingCmd.AddCommand(signingSetupCmd)
+	signingCmd.AddCommand(signingCSRCmd)
+	signingCmd.AddCommand(signingP12Cmd)
 
-	signingSetupCmd.Flags().StringP("certificate", "c", "", "Path to .p12 certificate file")
+	signingSetupCmd.Flags().StringP("certificate", "c", "", "Path to certificate file (.p12, or .cer from the Apple Developer portal)")
 	signingSetupCmd.Flags().StringP("profile", "p", "", "Path to .mobileprovision file")
+	signingSetupCmd.Flags().StringP("key", "k", "", "Path to the private key from 'builder signing csr' (required with a .cer)")
+
+	signingCSRCmd.Flags().String("name", "", "Your name (certificate common name)")
+	signingCSRCmd.Flags().String("email", "", "Email address of your Apple Developer account")
+
+	signingP12Cmd.Flags().StringP("certificate", "c", "", "Path to the .cer downloaded from the Apple Developer portal")
+	signingP12Cmd.Flags().StringP("key", "k", "", "Path to the private key from 'builder signing csr'")
+	signingP12Cmd.Flags().StringP("out", "o", "ios-signing.p12", "Path to write the .p12 to")
+	signingP12Cmd.Flags().String("password", "", "Password to protect the .p12 (prompted if omitted)")
+}
+
+func runSigningCSR(cmd *cobra.Command, args []string) error {
+	name, _ := cmd.Flags().GetString("name")
+	email, _ := cmd.Flags().GetString("email")
+
+	var err error
+	if name == "" {
+		if name, err = promptString("Your name (as on the certificate)", ""); err != nil {
+			return err
+		}
+	}
+	if email == "" {
+		if email, err = promptString("Apple Developer account email", ""); err != nil {
+			return err
+		}
+	}
+	if name == "" || email == "" {
+		return fmt.Errorf("name and email are required")
+	}
+
+	keyPath := "ios-signing.key"
+	csrPath := "ios-signing.csr"
+	if _, err := os.Stat(keyPath); err == nil {
+		fmt.Printf("%s already exists. Regenerating it invalidates any\n", keyPath)
+		fmt.Println("certificate created from the previous CSR.")
+		confirm := promptui.Prompt{Label: "Generate a new key", IsConfirm: true}
+		if _, err := confirm.Run(); err != nil {
+			return fmt.Errorf("keeping the existing key")
+		}
+	}
+
+	keyPEM, csrPEM, err := signing.GenerateKeyAndCSR(name, email)
+	if err != nil {
+		return err
+	}
+
+	if err := os.WriteFile(keyPath, keyPEM, 0600); err != nil {
+		return fmt.Errorf("failed to write private key: %w", err)
+	}
+	if err := os.WriteFile(csrPath, csrPEM, 0644); err != nil {
+		return fmt.Errorf("failed to write CSR: %w", err)
+	}
+
+	fmt.Println()
+	fmt.Printf("Private key: %s\n", keyPath)
+	fmt.Printf("CSR:         %s\n", csrPath)
+	fmt.Println()
+	fmt.Println("Keep the private key safe and do not commit it (add it to .gitignore).")
+	fmt.Println()
+	fmt.Println("Next steps:")
+	fmt.Println("  1. Go to https://developer.apple.com/account/resources/certificates/add")
+	fmt.Println("  2. Choose 'Apple Development' (or 'Apple Distribution' for App Store)")
+	fmt.Printf("  3. Upload %s and download the certificate (.cer)\n", csrPath)
+	fmt.Printf("  4. Run: builder signing setup --certificate <downloaded>.cer --key %s\n", keyPath)
+
+	return nil
+}
+
+func promptPassword(label string) (string, error) {
+	prompt := promptui.Prompt{Label: label, Mask: '*'}
+	password, err := prompt.Run()
+	if err != nil {
+		return "", fmt.Errorf("failed to read password: %w", err)
+	}
+	if password == "" {
+		return "", fmt.Errorf("a password is required")
+	}
+	return password, nil
+}
+
+// buildP12From reads a key and certificate from disk and assembles a .p12.
+func buildP12From(keyPath, certPath, password string) ([]byte, error) {
+	keyPEM, err := os.ReadFile(expandPath(keyPath))
+	if err != nil {
+		return nil, fmt.Errorf("failed to read private key %s: %w", keyPath, err)
+	}
+	certData, err := os.ReadFile(expandPath(certPath))
+	if err != nil {
+		return nil, fmt.Errorf("failed to read certificate %s: %w", certPath, err)
+	}
+	return signing.BuildP12(keyPEM, certData, password)
+}
+
+func runSigningP12(cmd *cobra.Command, args []string) error {
+	certPath, _ := cmd.Flags().GetString("certificate")
+	keyPath, _ := cmd.Flags().GetString("key")
+	outPath, _ := cmd.Flags().GetString("out")
+	password, _ := cmd.Flags().GetString("password")
+
+	var err error
+	if certPath == "" {
+		if certPath, err = promptString("Path to certificate (.cer from the Apple Developer portal)", ""); err != nil {
+			return err
+		}
+	}
+	if keyPath == "" {
+		if keyPath, err = promptString("Path to private key", "ios-signing.key"); err != nil {
+			return err
+		}
+	}
+	if certPath == "" || keyPath == "" {
+		return fmt.Errorf("certificate and key are required")
+	}
+	if password == "" {
+		if password, err = promptPassword("Password to protect the .p12"); err != nil {
+			return err
+		}
+	}
+
+	p12, err := buildP12From(keyPath, certPath, password)
+	if err != nil {
+		return err
+	}
+	if err := os.WriteFile(expandPath(outPath), p12, 0600); err != nil {
+		return fmt.Errorf("failed to write .p12: %w", err)
+	}
+
+	fmt.Printf("Created %s (do not commit it)\n", outPath)
+	return nil
+}
+
+// isPortalCertificate reports whether the path looks like a certificate from
+// the Apple Developer portal rather than a ready-made .p12 bundle.
+func isPortalCertificate(path string) bool {
+	switch strings.ToLower(filepath.Ext(path)) {
+	case ".cer", ".crt", ".pem":
+		return true
+	}
+	return false
 }
 
 // expandPath normalizes a path typed at a prompt. The shell never sees these,
@@ -107,17 +279,41 @@ func runSigningSetup(cmd *cobra.Command, args []string) error {
 	}
 	fmt.Printf("Profile: %s (%.1f KB)\n", profilePath, float64(len(profileData))/1024)
 
-	// Get certificate password (no echo)
-	passwordPrompt := promptui.Prompt{
-		Label: "Certificate password",
-		Mask:  '*',
-	}
-	password, err := passwordPrompt.Run()
-	if err != nil {
-		return fmt.Errorf("failed to read password: %w", err)
-	}
-	if password == "" {
-		return fmt.Errorf("certificate password is required")
+	var password string
+	if isPortalCertificate(certPath) {
+		// A .cer from the Apple Developer portal: assemble the .p12 locally
+		// from the private key that produced the CSR.
+		keyPath, _ := cmd.Flags().GetString("key")
+		if keyPath == "" {
+			keyPath, err = promptString("Path to private key file (from 'builder signing csr')", "ios-signing.key")
+			if err != nil {
+				return err
+			}
+		}
+		keyPEM, err := os.ReadFile(expandPath(keyPath))
+		if err != nil {
+			return fmt.Errorf("failed to read private key %s: %w", keyPath, err)
+		}
+		password, err = promptPassword("Password to protect the .p12")
+		if err != nil {
+			return err
+		}
+		certData, err = signing.BuildP12(keyPEM, certData, password)
+		if err != nil {
+			return err
+		}
+		// Save the .p12: it is the reusable signing identity (Sideloadly,
+		// another machine, re-running setup), not a throwaway.
+		p12Path := "ios-signing.p12"
+		if err := os.WriteFile(p12Path, certData, 0600); err != nil {
+			return fmt.Errorf("failed to write .p12: %w", err)
+		}
+		fmt.Printf("Assembled .p12: %s (do not commit it)\n", p12Path)
+	} else {
+		password, err = promptPassword("Certificate password")
+		if err != nil {
+			return err
+		}
 	}
 
 	fmt.Println()

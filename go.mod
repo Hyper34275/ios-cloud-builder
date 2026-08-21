@@ -12,6 +12,7 @@ require (
 	github.com/zalando/go-keyring v0.2.6
 	golang.org/x/crypto v0.47.0
 	howett.net/plist v1.0.1
+	software.sslmate.com/src/go-pkcs12 v0.7.3
 )
 
 require (
