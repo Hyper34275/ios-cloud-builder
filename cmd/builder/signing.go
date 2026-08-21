@@ -52,13 +52,26 @@ Apple Developer portal — the same thing Keychain Access does on a Mac.
 Writes ios-signing.key and ios-signing.csr to the current directory. Keep the
 key private and do not commit it. Upload the CSR at developer.apple.com to
 create a certificate, then run:
-'builder signing setup --certificate <downloaded>.cer --key ios-signing.key'.`,
+'builder signing p12 --certificate <downloaded>.cer --key ios-signing.key'.`,
 	RunE: runSigningCSR,
+}
+
+var signingP12Cmd = &cobra.Command{
+	Use:   "p12",
+	Short: "Assemble a .p12 from a private key and an Apple certificate",
+	Long: `Combines the private key from 'builder signing csr' with the certificate
+downloaded from the Apple Developer portal into a password-protected .p12 —
+the same file Keychain Access exports on a Mac.
+
+The .p12 works anywhere a Keychain-exported one does: 'builder signing setup',
+Sideloadly, AltStore, or importing it on a Mac.`,
+	RunE: runSigningP12,
 }
 
 func init() {
 	signingCmd.AddCommand(signingSetupCmd)
 	signingCmd.AddCommand(signingCSRCmd)
+	signingCmd.AddCommand(signingP12Cmd)
 
 	signingSetupCmd.Flags().StringP("certificate", "c", "", "Path to certificate file (.p12, or .cer from the Apple Developer portal)")
 	signingSetupCmd.Flags().StringP("profile", "p", "", "Path to .mobileprovision file")
@@ -66,6 +79,11 @@ func init() {
 
 	signingCSRCmd.Flags().String("name", "", "Your name (certificate common name)")
 	signingCSRCmd.Flags().String("email", "", "Email address of your Apple Developer account")
+
+	signingP12Cmd.Flags().StringP("certificate", "c", "", "Path to the .cer downloaded from the Apple Developer portal")
+	signingP12Cmd.Flags().StringP("key", "k", "", "Path to the private key from 'builder signing csr'")
+	signingP12Cmd.Flags().StringP("out", "o", "ios-signing.p12", "Path to write the .p12 to")
+	signingP12Cmd.Flags().String("password", "", "Password to protect the .p12 (prompted if omitted)")
 }
 
 func runSigningCSR(cmd *cobra.Command, args []string) error {
@@ -122,6 +140,69 @@ func runSigningCSR(cmd *cobra.Command, args []string) error {
 	fmt.Printf("  3. Upload %s and download the certificate (.cer)\n", csrPath)
 	fmt.Printf("  4. Run: builder signing setup --certificate <downloaded>.cer --key %s\n", keyPath)
 
+	return nil
+}
+
+func promptPassword(label string) (string, error) {
+	prompt := promptui.Prompt{Label: label, Mask: '*'}
+	password, err := prompt.Run()
+	if err != nil {
+		return "", fmt.Errorf("failed to read password: %w", err)
+	}
+	if password == "" {
+		return "", fmt.Errorf("a password is required")
+	}
+	return password, nil
+}
+
+// buildP12From reads a key and certificate from disk and assembles a .p12.
+func buildP12From(keyPath, certPath, password string) ([]byte, error) {
+	keyPEM, err := os.ReadFile(expandPath(keyPath))
+	if err != nil {
+		return nil, fmt.Errorf("failed to read private key %s: %w", keyPath, err)
+	}
+	certData, err := os.ReadFile(expandPath(certPath))
+	if err != nil {
+		return nil, fmt.Errorf("failed to read certificate %s: %w", certPath, err)
+	}
+	return signing.BuildP12(keyPEM, certData, password)
+}
+
+func runSigningP12(cmd *cobra.Command, args []string) error {
+	certPath, _ := cmd.Flags().GetString("certificate")
+	keyPath, _ := cmd.Flags().GetString("key")
+	outPath, _ := cmd.Flags().GetString("out")
+	password, _ := cmd.Flags().GetString("password")
+
+	var err error
+	if certPath == "" {
+		if certPath, err = promptString("Path to certificate (.cer from the Apple Developer portal)", ""); err != nil {
+			return err
+		}
+	}
+	if keyPath == "" {
+		if keyPath, err = promptString("Path to private key", "ios-signing.key"); err != nil {
+			return err
+		}
+	}
+	if certPath == "" || keyPath == "" {
+		return fmt.Errorf("certificate and key are required")
+	}
+	if password == "" {
+		if password, err = promptPassword("Password to protect the .p12"); err != nil {
+			return err
+		}
+	}
+
+	p12, err := buildP12From(keyPath, certPath, password)
+	if err != nil {
+		return err
+	}
+	if err := os.WriteFile(expandPath(outPath), p12, 0600); err != nil {
+		return fmt.Errorf("failed to write .p12: %w", err)
+	}
+
+	fmt.Printf("Created %s (do not commit it)\n", outPath)
 	return nil
 }
 
@@ -209,21 +290,13 @@ func runSigningSetup(cmd *cobra.Command, args []string) error {
 				return err
 			}
 		}
-		keyPath = expandPath(keyPath)
-		keyPEM, err := os.ReadFile(keyPath)
+		keyPEM, err := os.ReadFile(expandPath(keyPath))
 		if err != nil {
 			return fmt.Errorf("failed to read private key %s: %w", keyPath, err)
 		}
-		passwordPrompt := promptui.Prompt{
-			Label: "Password to protect the .p12",
-			Mask:  '*',
-		}
-		password, err = passwordPrompt.Run()
+		password, err = promptPassword("Password to protect the .p12")
 		if err != nil {
-			return fmt.Errorf("failed to read password: %w", err)
-		}
-		if password == "" {
-			return fmt.Errorf("a password is required")
+			return err
 		}
 		certData, err = signing.BuildP12(keyPEM, certData, password)
 		if err != nil {
@@ -237,17 +310,9 @@ func runSigningSetup(cmd *cobra.Command, args []string) error {
 		}
 		fmt.Printf("Assembled .p12: %s (do not commit it)\n", p12Path)
 	} else {
-		// Get certificate password (no echo)
-		passwordPrompt := promptui.Prompt{
-			Label: "Certificate password",
-			Mask:  '*',
-		}
-		password, err = passwordPrompt.Run()
+		password, err = promptPassword("Certificate password")
 		if err != nil {
-			return fmt.Errorf("failed to read password: %w", err)
-		}
-		if password == "" {
-			return fmt.Errorf("certificate password is required")
+			return err
 		}
 	}
 

@@ -134,8 +134,9 @@ builder dev flutter --skip-install --bundle-id <id>  # Use already installed app
 builder dev rn --metro-port 8082  # Use custom Metro port
 
 # Code signing
-builder signing csr           # Create a certificate signing request (no Mac needed)
-builder signing setup         # Set up code signing secrets
+builder signing csr           # Create a private key + certificate signing request
+builder signing p12           # Assemble a .p12 from the key and Apple's certificate
+builder signing setup         # Upload code signing secrets to GitHub
 ```
 
 ## Configuration
@@ -235,7 +236,18 @@ gitignored files are also excluded from build snapshots).
 2. Choose **Apple Development** (installs on registered devices) or **Apple Distribution** (App Store/Ad Hoc)
 3. Upload `ios-signing.csr` and download the resulting `.cer` file
 
-### 3. Create a provisioning profile
+### 3. Assemble the .p12
+
+```bash
+builder signing p12 --certificate development.cer --key ios-signing.key
+```
+
+This combines the key and certificate into `ios-signing.p12`, protected by a
+password you choose — byte-for-byte the same kind of file Keychain Access
+exports, and usable anywhere one is: `builder signing setup`, Sideloadly,
+AltStore, or importing it on a Mac. Keep it, and don't commit it.
+
+### 4. Create a provisioning profile
 
 On the portal:
 
@@ -243,23 +255,20 @@ On the portal:
 2. **Devices** → register your device's UDID (shown in [MobAI](https://mobai.run) when the device is connected; on Windows, iTunes shows it when you click the serial number on the device page)
 3. **Profiles** → create an **iOS App Development** (or Ad Hoc) profile, select your App ID, certificate, and devices, then download the `.mobileprovision` file
 
-### 4. Upload the signing secrets
+### 5. Upload the signing secrets
 
 ```bash
-builder signing setup --certificate ios_development.cer --key ios-signing.key --profile MyApp.mobileprovision
+builder signing setup --certificate ios-signing.p12 --profile MyApp.mobileprovision
 ```
 
-Builder assembles `ios-signing.p12` from the `.cer` and your key, protected
-with a password you choose — it's your signing identity, reusable with other
-tools (Sideloadly, a Mac, re-running setup), so keep it and don't commit it.
-It then uploads the signing material to GitHub Secrets:
+This uploads the signing material to GitHub Secrets:
 - `IOS_CERTIFICATE` - Base64-encoded .p12 file
 - `IOS_CERTIFICATE_PASSWORD` - Certificate password
 - `IOS_PROVISIONING_PROFILE` - Base64-encoded .mobileprovision file
 
-If you already have a `.p12` (for example, exported from a Mac's Keychain
-Access), pass it directly — `builder signing setup --certificate cert.p12` —
-and you'll be prompted for its password instead.
+You can also skip step 3 and hand `setup` the `.cer` together with the key —
+`builder signing setup --certificate development.cer --key ios-signing.key
+--profile MyApp.mobileprovision` — and it assembles the `.p12` on the way.
 
 Once configured, `builder ios build` will produce signed IPAs. Use `--unsigned` to skip signing.
 
