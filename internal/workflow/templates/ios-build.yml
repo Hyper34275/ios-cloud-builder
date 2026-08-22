@@ -88,7 +88,7 @@ jobs:
             echo "type=expo" >> $GITHUB_OUTPUT
           elif [ -f "package.json" ] && grep -q '"react-native"' package.json; then
             echo "type=reactnative" >> $GITHUB_OUTPUT
-          elif grep -rqlE 'kotlin\("multiplatform"\)|org\.jetbrains\.kotlin\.multiplatform|id\("org.jetbrains.kotlin.multiplatform"\)' --include='*.gradle.kts' --include='*.gradle' . 2>/dev/null; then
+          elif grep -rqlE 'kotlin\("multiplatform"\)|org\.jetbrains\.kotlin\.multiplatform|id\("org.jetbrains.kotlin.multiplatform"\)' --include='*.gradle.kts' --include='*.gradle' --include='libs.versions.toml' . 2>/dev/null; then
             echo "type=kmp" >> $GITHUB_OUTPUT
           else
             echo "type=native" >> $GITHUB_OUTPUT

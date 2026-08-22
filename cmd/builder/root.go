@@ -132,6 +132,11 @@ var kmpPluginRe = regexp.MustCompile(`kotlin\("multiplatform"\)|org\.jetbrains\.
 // Multiplatform project. The multiplatform plugin usually lives in a module's
 // build file (e.g. shared/build.gradle.kts) rather than the root, so we scan
 // root and immediate subdirectory Gradle files.
+//
+// Projects using a version catalog declare the plugin id once in
+// gradle/libs.versions.toml and reference it as `alias(libs.plugins.…)` in the
+// build files, so the catalog is scanned too — that is how most current KMP
+// projects (KaMPKit, PeopleInSpace) are set up.
 func isKMPProject() bool {
 	hasMultiplatform := func(path string) bool {
 		data, err := os.ReadFile(path)
@@ -141,7 +146,12 @@ func isKMPProject() bool {
 		return kmpPluginRe.Match(data)
 	}
 
-	if slices.ContainsFunc([]string{"settings.gradle.kts", "settings.gradle", "build.gradle.kts", "build.gradle"}, hasMultiplatform) {
+	roots := []string{
+		"settings.gradle.kts", "settings.gradle",
+		"build.gradle.kts", "build.gradle",
+		filepath.Join("gradle", "libs.versions.toml"),
+	}
+	if slices.ContainsFunc(roots, hasMultiplatform) {
 		return true
 	}
 

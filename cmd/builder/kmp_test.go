@@ -59,6 +59,26 @@ func TestIsKMPProject(t *testing.T) {
 			want:  true,
 		},
 		{
+			// How most current KMP projects declare it: the id lives in the
+			// version catalog and build files only reference the alias.
+			name: "version catalog alias",
+			files: map[string]string{
+				"gradle/libs.versions.toml": "[plugins]\nkotlin-multiplatform = { id = \"org.jetbrains.kotlin.multiplatform\", version.ref = \"kotlin\" }\n",
+				"shared/build.gradle.kts":   "plugins {\n  alias(libs.plugins.kotlin.multiplatform)\n}\n",
+			},
+			want: true,
+		},
+		{
+			// A catalog can mention unrelated libraries whose names contain
+			// "multiplatform" (multiplatform-settings and friends).
+			name: "catalog with only multiplatform-named libraries",
+			files: map[string]string{
+				"gradle/libs.versions.toml": "[versions]\nmultiplatformSettings = \"1.3.0\"\n[libraries]\nsettings = { module = \"com.russhwolf:multiplatform-settings\" }\n",
+				"build.gradle.kts":          "plugins {\n  kotlin(\"jvm\")\n}\n",
+			},
+			want: false,
+		},
+		{
 			name:  "android-only gradle project",
 			files: map[string]string{"build.gradle.kts": "plugins {\n  id(\"com.android.application\")\n  kotlin(\"android\")\n}\n"},
 			want:  false,
