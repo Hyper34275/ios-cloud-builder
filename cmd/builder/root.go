@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 	"syscall"
@@ -121,6 +122,12 @@ func isExpoProject() bool {
 	return strings.Contains(string(data), `"expo"`)
 }
 
+// kmpPluginRe matches a declaration of the Kotlin Multiplatform Gradle plugin,
+// in the Kotlin DSL (`kotlin("multiplatform")`) or Groovy/plugin-id form. It
+// must stay in step with the detection in the workflow template: a project the
+// CLI calls KMP but the runner does not gets no JDK, and vice versa.
+var kmpPluginRe = regexp.MustCompile(`kotlin\("multiplatform"\)|org\.jetbrains\.kotlin\.multiplatform|id\(["']org\.jetbrains\.kotlin\.multiplatform["']\)`)
+
 // isKMPProject reports whether the current directory looks like a Kotlin
 // Multiplatform project. The multiplatform plugin usually lives in a module's
 // build file (e.g. shared/build.gradle.kts) rather than the root, so we scan
@@ -131,7 +138,7 @@ func isKMPProject() bool {
 		if err != nil {
 			return false
 		}
-		return strings.Contains(string(data), "multiplatform")
+		return kmpPluginRe.Match(data)
 	}
 
 	if slices.ContainsFunc([]string{"settings.gradle.kts", "settings.gradle", "build.gradle.kts", "build.gradle"}, hasMultiplatform) {
