@@ -26,6 +26,7 @@ go install ./cmd/builder
 ./builder ios build         # Trigger build and download IPA to ./dist/
 ./builder dev flutter       # Flutter hot reload with MobAI
 ./builder dev rn            # React Native hot reload with MobAI
+./builder dev kmp           # Kotlin Multiplatform install + launch (no hot reload)
 ./builder dev flutter --skip-install --bundle-id <id>  # Use already installed app
 ./builder dev rn --skip-install --bundle-id <id>       # Use already installed app
 ```
@@ -91,6 +92,14 @@ builder dev rn ──────────► Starts Metro bundler (if not ru
                                 │
                                 ▼
                           Launches app with Metro URL env vars
+
+builder dev kmp ─────────► Connects to MobAI
+                                │
+                                ▼
+                          Installs IPA on device (with optional re-sign)
+                                │
+                                ▼
+                          Launches app and streams output (no hot reload)
 ```
 
 ### Module Layout
@@ -131,7 +140,12 @@ internal/
 - **Flutter Custom Devices**: Auto-configures `~/.config/flutter/custom_devices.json` for `mobai-ios` device
 - **Debug URL Capture**: WebSocket stream captures VM Service URL from app launch
 - **React Native Metro**: Auto-starts Metro bundler, passes Metro URL to app via environment variables
-- **FrameworkHandler Interface**: Common session with pluggable handlers for Flutter/React Native
+- **FrameworkHandler Interface**: Common session with pluggable handlers for Flutter/React Native/KMP
+- **KMP Detection**: The multiplatform Gradle plugin is matched by regex in root and module build
+  files. `cmd/builder/root.go` (`kmpPluginRe`) and both workflow templates must agree: a project the
+  CLI calls KMP but the runner does not gets no JDK, and vice versa.
+- **KMP Has No Hot Reload**: shared Kotlin compiles to a native framework at build time, so
+  `dev kmp` only installs, launches and streams output; code changes need `ios build`
 
 ## Configuration
 

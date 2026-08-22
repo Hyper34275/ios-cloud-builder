@@ -41,6 +41,11 @@ on:
         required: false
         type: string
         default: ''
+      jdk_version:
+        description: 'JDK version for Kotlin Multiplatform Gradle builds (e.g., 17).'
+        required: false
+        type: string
+        default: '17'
 
 jobs:
   simulator:
@@ -94,6 +99,8 @@ jobs:
             echo "type=expo" >> $GITHUB_OUTPUT
           elif [ -f "package.json" ] && grep -q '"react-native"' package.json; then
             echo "type=reactnative" >> $GITHUB_OUTPUT
+          elif grep -rqlE 'kotlin\("multiplatform"\)|org\.jetbrains\.kotlin\.multiplatform|id\("org.jetbrains.kotlin.multiplatform"\)' --include='*.gradle.kts' --include='*.gradle' --include='libs.versions.toml' . 2>/dev/null; then
+            echo "type=kmp" >> $GITHUB_OUTPUT
           else
             echo "type=native" >> $GITHUB_OUTPUT
           fi
@@ -144,6 +151,19 @@ jobs:
       - name: Install npm dependencies
         if: steps.detect.outputs.type == 'reactnative' || steps.detect.outputs.type == 'expo'
         run: npm install
+
+      # KMP builds through xcodebuild like a native project, but its Xcode run
+      # script phase shells out to Gradle, which needs a JDK on PATH.
+      - name: Setup JDK
+        if: steps.detect.outputs.type == 'kmp'
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: ${{ inputs.jdk_version || '17' }}
+
+      - name: Setup Gradle
+        if: steps.detect.outputs.type == 'kmp'
+        uses: gradle/actions/setup-gradle@v4
 
       - name: Build for the simulator
         id: build

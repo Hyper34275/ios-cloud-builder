@@ -79,6 +79,7 @@ gh secret set MOBAI_API_KEY
 | React Native | `ios/` | Yes |
 | Expo (ejected) | `ios/` | Yes |
 | Flutter | `ios/` | Yes |
+| Kotlin Multiplatform | `iosApp/` | Yes |
 | Cordova/Ionic | `platforms/ios/` | Yes |
 
 ## Installation
@@ -130,6 +131,7 @@ builder dev flutter           # Flutter hot reload with file watching
 builder dev flutter --no-watch  # Disable automatic file watching
 builder dev flutter --no-attach # Print flutter attach command instead of running it
 builder dev rn                # React Native hot reload (alias: react-native)
+builder dev kmp               # Kotlin Multiplatform install + launch (alias: kotlin)
 builder dev flutter --skip-install --bundle-id <id>  # Use already installed app
 builder dev rn --metro-port 8082  # Use custom Metro port
 
@@ -404,6 +406,56 @@ builder dev rn --metro-port 8082
 - Shake device or press `d` in Metro terminal to open dev menu
 - Enable "Fast Refresh" in dev menu
 - Try reloading with `r` in Metro terminal
+
+## Kotlin Multiplatform Development
+
+KMP iOS apps build and run on a device like any other project, with one
+difference: **there is no hot reload.** Shared Kotlin is compiled into a native
+framework at build time, so there is no runtime to swap code into — every code
+change needs a rebuild.
+
+### Setup
+
+1. Download and install [MobAI](https://mobai.run/download), then connect your iOS device
+2. Build your app:
+   ```bash
+   builder ios build
+   ```
+3. Install and launch it on the device:
+   ```bash
+   builder dev kmp
+   ```
+
+`builder init` detects Kotlin Multiplatform projects by looking for the
+multiplatform Gradle plugin in the root and module build files, and asks which
+JDK the CI build should use (default 17):
+
+```json
+{
+  "kmp": { "jdkVersion": "17" }
+}
+```
+
+On CI, the iOS app is built with `xcodebuild`, whose run script phase (or
+CocoaPods) invokes Gradle to compile the shared framework — which is why the
+JDK version matters. Gradle output is cached between builds.
+
+### When to Rebuild
+
+Every change to Kotlin or Swift code needs `builder ios build` followed by
+`builder dev kmp` again. Use `--skip-install --bundle-id <id>` to relaunch an
+app that is already installed.
+
+### Troubleshooting
+
+**Build fails with "Unsupported class file major version" or a Gradle JDK error**
+- The project needs a different JDK than the default: set `kmp.jdkVersion` in `builder.json` to match what the project uses locally
+
+**Build fails with "SDK does not contain 'libarclite'"**
+- An old Kotlin/Native version against a newer Xcode; upgrade the Kotlin plugin in Gradle
+
+**App launches then immediately exits**
+- Launch with `builder dev kmp --logs` to see the device output
 
 ## Build Limits
 

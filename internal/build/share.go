@@ -82,6 +82,9 @@ func (c *Coordinator) Share(ctx context.Context, opts ShareOptions) (*ShareResul
 	if c.config.Flutter.Version != "" {
 		inputs["flutter_version"] = c.config.Flutter.Version
 	}
+	if c.config.KMP.JDKVersion != "" {
+		inputs["jdk_version"] = c.config.KMP.JDKVersion
+	}
 	if err := c.github.TriggerWorkflow(ctx, c.config.GitHub.Owner, c.config.GitHub.Repo, ShareWorkflowFile, inputs); err != nil {
 		c.progress.Error(PhaseTriggering, err)
 		return nil, fmt.Errorf("failed to trigger workflow: %w", err)
