@@ -14,9 +14,13 @@ import (
 func TestPublicWorkflowsDisableSetupGoCaches(t *testing.T) {
 	t.Parallel()
 
-	workflowPaths, err := filepath.Glob("../../.github/workflows/*.yml")
-	if err != nil {
-		t.Fatalf("glob public workflows: %v", err)
+	var workflowPaths []string
+	for _, pattern := range []string{"../../.github/workflows/*.yml", "../../.github/workflows/*.yaml"} {
+		matches, err := filepath.Glob(pattern)
+		if err != nil {
+			t.Fatalf("glob public workflows with %q: %v", pattern, err)
+		}
+		workflowPaths = append(workflowPaths, matches...)
 	}
 	if len(workflowPaths) == 0 {
 		t.Fatal("no public workflows found")
@@ -38,7 +42,7 @@ func TestPublicWorkflowsDisableSetupGoCaches(t *testing.T) {
 			for next := index + 1; next < len(lines); next++ {
 				trimmed := strings.TrimSpace(lines[next])
 				indent := len(lines[next]) - len(strings.TrimLeft(lines[next], " "))
-				if strings.HasPrefix(trimmed, "- ") && indent < stepIndent {
+				if strings.HasPrefix(trimmed, "- ") && indent <= stepIndent {
 					break
 				}
 				if trimmed == "cache: false" {
