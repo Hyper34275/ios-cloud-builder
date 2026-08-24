@@ -1,468 +1,240 @@
-# Builder
+# iOS Cloud Builder
 
-Build and develop iOS apps from Windows, Linux, or any platform.
+Build unsigned iOS applications from Linux, WSL, or Windows using a narrowly scoped remote macOS build. This is a truthful open-source remote-build/orchestration project derived from [MobAI-App/ios-builder](https://github.com/MobAI-App/ios-builder), not a generic compute service or a disguised workload.
 
-Builder is a CLI tool for iOS development without a Mac. It uses GitHub Actions for remote builds and [MobAI](https://mobai.run) for on-device development.
+The central backend lets multiple private application repositories use one public builder repository without committing private source or publishing plaintext output:
 
-![Builder Demo](assets/ios-builder-demo.gif)
-
-## Features
-
-- **Build from anywhere**: Build any iOS app (native, Flutter, React Native) via GitHub Actions
-- **Try it on a simulator**: Use your build on an iOS simulator from Windows or Linux
-- **Flutter & React Native dev tools**: Hot reload on real iOS devices from Windows/Linux
-- **Simple setup**: One command to add the workflow to your repo
-- **Code signing**: Optional signing with your certificate and provisioning profile
-- **Device integration**: Install and run apps via MobAI
-
-## How It Works
-
-```
-Your Repository                  GitHub Actions (macOS)
- └─ .github/workflows/            └─ ios-build.yml
-     └─ ios-build.yml                 ├─ Checkout code
-                                      ├─ Build with Xcode
-builder ios build ───────────────────► Upload IPA artifact
-     │
-     └─ Downloads IPA ◄─────────────── artifact: ipa
+```text
+private app working tree
+  -> temporary private refs/ios-builder/jobs/<uuid>
+  -> public builder workflow on macOS
+  -> repository-scoped GitHub App checkout
+  -> unsigned iOS build with private console redirection
+  -> AGE-encrypted IPA + log artifact
+  -> local download, decryption, IPA validation, and cleanup
 ```
 
-## Quick Start
+The original repository backend remains available for existing MobAI users and repository-local builds. Simulator sharing, MobAI integration, Flutter/React Native/KMP development commands, framework detection, working-tree snapshots, signing tools, and public Go wrappers are retained. See [the upstream relationship](docs/UPSTREAM.md).
 
-### 1. Authenticate with GitHub
+> [!IMPORTANT]
+> GitHub's hosted-runner terms contain a repository-association limitation, and GitHub has not explicitly approved this exact cross-repository architecture. Read [COMPLIANCE.md](COMPLIANCE.md) before using the central hosted-runner backend. The backend boundary is intentionally replaceable by a self-hosted Mac, Codemagic, or another macOS CI implementation.
+
+## Security properties
+
+- Private source is pushed only to the private source repository, under a temporary non-branch ref.
+- The GitHub App has Metadata read and Contents read only and is installed on explicitly selected repositories.
+- Each job requests an installation token for exactly one source repository, checks out with `persist-credentials: false`, then revokes the token before project code runs.
+- Central v1 is unsigned-only and accepts no signing material or Apple credentials.
+- Detailed dependency/compiler output is redirected to a private log from process start.
+- IPA and build log are encrypted with a local-only AGE X25519 identity before upload.
+- The public artifact contains only `App.ipa.age` and `build.log.age`, is retained for one day, and is deleted early when local retrieval succeeds.
+- Central mode creates no Actions caches and uploads no DerivedData, dSYM, archive, source, or plaintext diagnostics.
+- Inputs are validated before credential creation; build commands use fixed argv arrays, never `eval` or user-provided scripts.
+- Full UUIDv4 correlation binds the workflow run and artifact to one build.
+
+These controls protect against accidental public disclosure; they do not sandbox intentionally malicious private project code or hide plaintext from GitHub's active runner. Read the full [threat model](docs/THREAT_MODEL.md).
+
+## Prerequisites
+
+Local workstation (Linux/WSL/macOS; Windows through PowerShell/WSL):
+
+- Git 2.30+
+- GitHub CLI (`gh`) authenticated to the source and builder repositories, recommended
+- A Git remote using an explicit `github.com` HTTPS or SSH URL
+- Builder CLI
+
+The public builder workflow uses the stable `macos-15` runner image. No local Mac, Xcode, certificate, or provisioning profile is required for an unsigned central build.
+
+## Install the CLI
+
+From a published release:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/ori2015/ios-cloud-builder/main/install.sh | bash
+```
+
+Or build from source with Go 1.24 or newer:
+
+```bash
+git clone https://github.com/ori2015/ios-cloud-builder.git
+cd ios-cloud-builder
+go build -o builder ./cmd/builder
+install -m 0755 builder ~/.local/bin/builder
+```
+
+Windows users can download `builder-windows-amd64.exe` from Releases and place it on `PATH`.
+
+Authentication resolution order is `BUILDER_GITHUB_TOKEN`, `GH_TOKEN`, `GITHUB_TOKEN`, an authenticated `gh`, then the legacy Builder credential store. Tokens are never written to `builder.json` or logged. Usually this is enough:
+
+```bash
+gh auth login
+gh auth status
+```
+
+The legacy device flow remains available for repository-mode compatibility:
 
 ```bash
 builder auth github
 ```
 
-### 2. Initialize (in your project directory)
+## One-time public builder setup
 
-```bash
-cd your-ios-project
-builder init
+This repository itself is the public builder. Fork it publicly without rewriting history, retain `.github/workflows/ios-build.yml`, and restrict write access to trusted operators.
+
+Create a dedicated GitHub App in **Settings -> Developer settings -> GitHub Apps -> New GitHub App** with these exact settings:
+
+| Setting | Value |
+|---|---|
+| GitHub App name | `ios-cloud-builder-<your-account>` (globally unique) |
+| Homepage URL | URL of your public builder repository |
+| Webhook | Inactive |
+| Repository permissions: Contents | Read-only |
+| Repository permissions: Metadata | Read-only (implicit) |
+| Every other repository permission | No access |
+| Organization permissions | No access |
+| Where can this GitHub App be installed? | Only on this account |
+
+Generate one private key. In the **public builder repository**, configure:
+
+```text
+Repository variable  APP_CLIENT_ID   = GitHub App client ID
+Repository secret    APP_PRIVATE_KEY = complete generated PEM private key
 ```
 
-This detects your GitHub repo, creates the workflow files, and offers to commit, push, and trigger your first build - all interactively.
+Install the App using **Only select repositories** and choose only private applications this builder may read. Do not grant Actions, Issues, Pull requests, Administration, or write permissions. Delete the downloaded PEM after the repository secret is verified, or retain a recovery copy only in an appropriate secrets manager. Never commit it.
 
-### 3. Build
+Protect the builder's default branch, require review for CODEOWNERS paths, keep administrators minimal, and leave the default workflow token permission at read-only.
 
-```bash
-builder ios build
-```
+## Add a private application
 
-The CLI triggers the workflow and downloads the IPA to `./dist/`.
-
-### 4. Try it on a simulator (optional)
+From each authorized private application:
 
 ```bash
-builder ios share
+cd /path/to/private-app
+builder central setup --builder YOUR_ACCOUNT/ios-cloud-builder
+builder central doctor
 ```
 
-Builds the working tree for the iOS simulator and makes that simulator usable
-from the [MobAI](https://mobai.run) app, so you can tap through a build without
-a Mac. It shows up under CI Devices, stays available while you are using it, and
-closes when you release it there or leave it unused (30 minutes by default, use
-`--duration` to change).
-
-Needs MobAI Pro and a `MOBAI_API_KEY` repository secret. Create the key in the
-MobAI app under Account → API Keys, then:
-
-```bash
-gh secret set MOBAI_API_KEY
-```
-
-## Supported Frameworks
-
-| Framework | iOS Path | Auto-detected |
-|-----------|----------|---------------|
-| Native iOS/Swift | `.` (root) | Yes |
-| React Native | `ios/` | Yes |
-| Expo (ejected) | `ios/` | Yes |
-| Flutter | `ios/` | Yes |
-| Kotlin Multiplatform | `iosApp/` | Yes |
-| Cordova/Ionic | `platforms/ios/` | Yes |
-
-## Installation
-
-### Windows
-
-Download `builder.exe` from [Releases](https://github.com/MobAI-App/ios-builder/releases) and add to PATH.
-
-### Homebrew (macOS/Linux)
-
-```bash
-brew install mobai-app/tap/ios-builder
-```
-
-The formula is named `ios-builder`; the command it installs is `builder`.
-
-### macOS/Linux/WSL
-
-```bash
-curl -sSL https://raw.githubusercontent.com/MobAI-App/ios-builder/main/install.sh | bash
-```
-
-### From Source
-
-```bash
-git clone https://github.com/MobAI-App/ios-builder.git
-cd ios-builder
-go build -o builder ./cmd/builder
-```
-
-## Commands
-
-```bash
-# Setup
-builder auth github           # Authenticate with GitHub
-builder init                  # Set up workflow in current repo
-builder update                # Update builder to the latest release
-
-# Building
-builder ios build             # Trigger build and download IPA to ./dist/
-builder ios build --unsigned  # Build without code signing (if signing is configured)
-
-# Simulator (requires MobAI Pro)
-builder ios share             # Try the build on a simulator in the MobAI app
-builder ios share --duration 1h  # Keep it available longer while unused
-
-# Development (requires MobAI)
-builder dev flutter           # Flutter hot reload with file watching
-builder dev flutter --no-watch  # Disable automatic file watching
-builder dev flutter --no-attach # Print flutter attach command instead of running it
-builder dev rn                # React Native hot reload (alias: react-native)
-builder dev kmp               # Kotlin Multiplatform install + launch (alias: kotlin)
-builder dev flutter --skip-install --bundle-id <id>  # Use already installed app
-builder dev rn --metro-port 8082  # Use custom Metro port
-
-# Code signing
-builder signing csr           # Create a private key + certificate signing request
-builder signing p12           # Assemble a .p12 from the key and Apple's certificate
-builder signing setup         # Upload code signing secrets to GitHub
-```
-
-## Configuration
-
-`builder.json`:
+`central setup` detects the source GitHub repository, project type, and common iOS path; creates/reuses a local AGE identity; and writes a configuration like:
 
 ```json
 {
   "project": "MyApp",
   "platform": "ios",
-  "github": {
-    "owner": "username",
-    "repo": "my-ios-app"
+  "backend": "central",
+  "github": { "owner": "SOURCE_OWNER", "repo": "PRIVATE_SOURCE_REPO" },
+  "builder": {
+    "owner": "YOUR_ACCOUNT",
+    "repo": "ios-cloud-builder",
+    "workflow": "ios-build.yml"
   },
-  "ios": {
-    "path": "ios",
-    "scheme": "",
-    "signing": true
-  },
-  "mobai": {
-    "url": "http://localhost:8686",
-    "device_id": ""
-  },
-  "flutter": {
-    "watch": {
-      "dirs": ["lib"],
-      "patterns": [".dart"],
-      "ignore": [".g.dart", ".freezed.dart"],
-      "debounce": 100
-    }
-  }
+  "security": { "recipient": "age1..." },
+  "ios": { "path": "ios", "scheme": "", "configuration": "Debug" }
 }
 ```
 
-### MobAI Configuration
-
-| Field | Description | Default |
-|-------|-------------|---------|
-| `mobai.url` | MobAI API URL | `http://localhost:8686` |
-| `mobai.device_id` | Preferred device ID (uses first available if empty) | `""` |
-
-**WSL users**: MobAI runs on Windows, so you need to:
-
-1. In MobAI, go to **Integrations → API server** and enable **Allow external connections**
-2. Get your Windows hostname and use it with `.local` suffix:
+Only the public AGE recipient is stored in this file. The private identity is kept in the OS keyring when usable or under the user's configuration directory with `0600` permissions. To initialize it explicitly:
 
 ```bash
-# Get Windows hostname from WSL
-hostname.exe
+builder security init
 ```
 
-```json
-{
-  "mobai": {
-    "url": "http://YOUR-PC-NAME.local:8686"
-  }
-}
-```
+Existing upstream `builder.json` files migrate automatically to `backend: repository`. Adding valid `builder` and `security` fields without a backend migrates to central. `builder init --backend central --builder OWNER/REPO` is the interactive alternative and deliberately does not create `.github/workflows` in the private repository.
 
-### Flutter File Watcher
-
-| Field | Description | Default |
-|-------|-------------|---------|
-| `flutter.watch.dirs` | Directories to watch | `["lib"]` |
-| `flutter.watch.patterns` | File patterns to match | `[".dart"]` |
-| `flutter.watch.ignore` | Patterns to ignore | `[".g.dart", ".freezed.dart"]` |
-| `flutter.watch.debounce` | Debounce delay in ms | `100` |
-
-## Code Signing
-
-By default, builds are unsigned. Signed builds need a signing certificate and a
-provisioning profile — and despite what many guides claim, **you do not need a
-Mac to create either one**. The `.p12` certificate is normally created through
-Keychain Access, but Builder does the same thing itself: it generates the
-private key and certificate signing request, and assembles the `.p12` from the
-certificate Apple issues.
-
-You need a paid [Apple Developer Program](https://developer.apple.com/programs/)
-membership — the portal only issues certificates to paid accounts. (Without one,
-build unsigned and let [MobAI](https://mobai.run) re-sign on install with a free
-Apple ID.)
-
-### 1. Create a certificate signing request
+## Daily use
 
 ```bash
+cd /path/to/any/authorized/private-ios-project
+builder ios build
+```
+
+The command snapshots staged, unstaged, and untracked non-ignored files without modifying the branch, real index, or working tree. It pushes only the temporary private ref, dispatches the public builder, shows high-level progress, downloads ciphertext, decrypts locally, validates the IPA ZIP and app structure, and writes:
+
+```text
+./dist/MyApp.ipa
+```
+
+The private ref and encrypted public artifact are deleted best-effort. A failure automatically downloads and decrypts diagnostics under `dist/`. If retrieval was interrupted, retry while the one-day artifact still exists:
+
+```bash
+builder ios logs <build-uuid>
+```
+
+Remove abandoned refs older than the default 24 hours:
+
+```bash
+builder cleanup
+builder cleanup --older-than 48h
+```
+
+Snapshot creation respects `.gitignore`. An untracked secret that is not ignored will be included in the temporary private snapshot, so review ignore rules before building.
+
+## Supported projects
+
+- Native Swift/Objective-C iOS projects and workspaces
+- Flutter
+- React Native and ejected Expo
+- Kotlin Multiplatform iOS applications
+- Cordova/Ionic generated iOS projects
+- XcodeGen manifests
+
+Schemes and workspaces/projects are detected where possible. Central builds always pass `CODE_SIGNING_ALLOWED=NO` and package the device `.app` as an unsigned IPA. Central v1 does not upload certificates or provisioning profiles.
+
+## Repository backend and retained commands
+
+Set `"backend": "repository"` to retain the original behavior where workflows live in the application repository. This mode continues to support repository-local signing and simulator sharing.
+
+```bash
+builder init
+builder ios build
+builder ios share
 builder signing csr
+builder signing p12
+builder signing setup
+builder dev flutter
+builder dev rn
+builder dev kmp
+builder mobai ping
+builder update
 ```
 
-This asks for your name and email and writes two files to the current
-directory: `ios-signing.key` (your private key) and `ios-signing.csr`. Keep
-the key wherever suits you — just don't commit it (add it to `.gitignore`;
-gitignored files are also excluded from build snapshots).
+`builder ios share` and `builder signing setup` are intentionally repository-backend features. Central v1 installs no private-repository workflow and stores no Apple signing secrets.
 
-### 2. Create the certificate
+## Doctor checks
 
-1. Go to [Certificates](https://developer.apple.com/account/resources/certificates/add) on the Apple Developer portal
-2. Choose **Apple Development** (installs on registered devices) or **Apple Distribution** (App Store/Ad Hoc)
-3. Upload `ios-signing.csr` and download the resulting `.cer` file
+`builder central doctor` verifies, without printing credentials:
 
-### 3. Assemble the .p12
+- Git and local GitHub authentication source
+- config schema and source/builder separation
+- public builder and private source API access
+- central workflow availability
+- `APP_CLIENT_ID` variable and `APP_PRIVATE_KEY` secret metadata
+- matching local AGE identity
+- explicit GitHub source remote
+- dry-run permission to push the temporary snapshot namespace
+
+## Updating and contributing
+
+See [docs/UPSTREAM.md](docs/UPSTREAM.md) for the preserved upstream baseline and merge procedure. Before submitting:
 
 ```bash
-builder signing p12 --certificate development.cer --key ios-signing.key
+go test ./...
+go test -race ./...
+go vet ./...
+go build ./cmd/builder
+go build ./cmd/builder-runner
 ```
 
-This combines the key and certificate into `ios-signing.p12`, protected by a
-password you choose — byte-for-byte the same kind of file Keychain Access
-exports, and usable anywhere one is: `builder signing setup`, Sideloadly,
-AltStore, or importing it on a Mac. Keep it, and don't commit it.
+## Known limitations
 
-### 4. Create a provisioning profile
-
-On the portal:
-
-1. **Identifiers** → register an App ID matching your app's bundle identifier
-2. **Devices** → register your device's UDID (shown in [MobAI](https://mobai.run) when the device is connected; on Windows, iTunes shows it when you click the serial number on the device page)
-3. **Profiles** → create an **iOS App Development** (or Ad Hoc) profile, select your App ID, certificate, and devices, then download the `.mobileprovision` file
-
-### 5. Upload the signing secrets
-
-```bash
-builder signing setup --certificate ios-signing.p12 --profile MyApp.mobileprovision
-```
-
-This uploads the signing material to GitHub Secrets:
-- `IOS_CERTIFICATE` - Base64-encoded .p12 file
-- `IOS_CERTIFICATE_PASSWORD` - Certificate password
-- `IOS_PROVISIONING_PROFILE` - Base64-encoded .mobileprovision file
-
-You can also skip step 3 and hand `setup` the `.cer` together with the key —
-`builder signing setup --certificate development.cer --key ios-signing.key
---profile MyApp.mobileprovision` — and it assembles the `.p12` on the way.
-
-Once configured, `builder ios build` will produce signed IPAs. Use `--unsigned` to skip signing.
-
-## Installing the IPA
-
-Use [MobAI](https://mobai.run) to sign and install your IPA directly to your device. MobAI handles code signing automatically and works with both signed and unsigned builds.
-
-## Development on Windows/Linux
-
-Builder supports hot reload for Flutter and React Native on Windows/Linux using [MobAI](https://mobai.run) for iOS device control. This allows you to develop iOS apps without a Mac.
-
-## Flutter Development
-
-### Setup
-
-1. Download and install [MobAI](https://mobai.run/download), then connect your iOS device
-2. Build your app:
-   ```bash
-   builder ios build
-   ```
-   This creates an IPA in `./dist/`
-3. Start development with hot reload:
-   ```bash
-   builder dev flutter
-   ```
-   MobAI will guide you through installation. Re-signing requires an iCloud account - we highly recommend creating a new one at [icloud.com](https://icloud.com) instead of using your primary account. If you re-sign, note the new bundle ID (includes team ID suffix, e.g., `com.example.myapp.TEAMID`).
-
-### Subsequent Runs
-
-Once the app is installed, skip the install step:
-```bash
-builder dev flutter --skip-install --bundle-id com.example.myapp.TEAMID
-```
-
-### File Watching
-
-By default, `builder dev flutter` watches for Dart file changes and automatically triggers hot reload. When flutter attach connects, it also sends an initial hot restart to ensure your latest code is running.
-
-- **Automatic hot reload**: Edit a `.dart` file and save - hot reload triggers automatically
-- **Generated files ignored**: Files like `.g.dart` and `.freezed.dart` are ignored by default
-- **Configurable**: Customize watched directories, patterns, and debounce via `builder.json`
-
-To disable file watching:
-```bash
-builder dev flutter --no-watch
-```
-
-To print the `flutter attach` command instead of running it (useful for IDE integration):
-```bash
-builder dev flutter --no-attach
-```
-
-### When to Rebuild
-
-- **Native code changes** (Swift, Objective-C, Podfile, native dependencies): Run `builder ios build` and reinstall
-- **Dart code changes only**: No rebuild needed - file watcher triggers hot reload automatically
-
-If you don't see your recent Dart changes after launching, press `R` in the terminal to perform a hot restart.
-
-### Troubleshooting
-
-**App won't launch / connection error**
-- Close the app on your device before running `builder dev flutter`
-- Reconnect the device (unplug/replug USB)
-- Restart MobAI
-- Run `builder mobai ping` to verify connection
-
-**"No devices found" error**
-- Ensure MobAI is running and device is connected
-- Only physical iOS devices are supported (no simulators)
-
-**Hot reload not working**
-- Make sure you're using the correct bundle ID (with team ID suffix)
-- Try hot restart with `R` key
-- Check that MobAI shows the device as connected
-
-**File watcher not triggering**
-- Ensure you're editing files in watched directories (default: `lib/`)
-- Check if the file matches watch patterns (default: `.dart`)
-- Generated files (`.g.dart`, `.freezed.dart`) are ignored by default
-- Try running without `--no-watch` flag
-
-## React Native Development
-
-### Setup
-
-1. Download and install [MobAI](https://mobai.run/download), then connect your iOS device
-2. Build your app:
-   ```bash
-   builder ios build
-   ```
-3. Start development with hot reload:
-   ```bash
-   builder dev rn
-   ```
-   This will:
-   - Start Metro bundler if not running
-   - Install the IPA on your device (with optional re-signing)
-   - Launch the app with Metro URL configured automatically
-
-### Subsequent Runs
-
-Once the app is installed:
-```bash
-builder dev rn --skip-install --bundle-id com.example.myapp.TEAMID
-```
-
-### Custom Metro Port
-
-If port 8081 is in use:
-```bash
-builder dev rn --metro-port 8082
-```
-
-### When to Rebuild
-
-- **Native code changes** (Swift, Objective-C, Podfile, native modules): Run `builder ios build` and reinstall
-- **JavaScript changes only**: No rebuild needed - Metro handles it automatically
-
-### Troubleshooting
-
-**Metro not starting**
-- Ensure Node.js and React Native CLI are installed
-- Try starting Metro manually: `npx react-native start`
-
-**App not connecting to Metro**
-- Device must be on the same WiFi network as the computer running Metro
-- Check that Metro is running and accessible
-- Verify the Metro port is correct (default: 8081)
-- On WSL2, ensure MobAI has external connections enabled
-
-**Hot reload not working**
-- Shake device or press `d` in Metro terminal to open dev menu
-- Enable "Fast Refresh" in dev menu
-- Try reloading with `r` in Metro terminal
-
-## Kotlin Multiplatform Development
-
-KMP iOS apps build and run on a device like any other project, with one
-difference: **there is no hot reload.** Shared Kotlin is compiled into a native
-framework at build time, so there is no runtime to swap code into — every code
-change needs a rebuild.
-
-### Setup
-
-1. Download and install [MobAI](https://mobai.run/download), then connect your iOS device
-2. Build your app:
-   ```bash
-   builder ios build
-   ```
-3. Install and launch it on the device:
-   ```bash
-   builder dev kmp
-   ```
-
-`builder init` detects Kotlin Multiplatform projects by looking for the
-multiplatform Gradle plugin in the root and module build files, and asks which
-JDK the CI build should use (default 17):
-
-```json
-{
-  "kmp": { "jdkVersion": "17" }
-}
-```
-
-On CI, the iOS app is built with `xcodebuild`, whose run script phase (or
-CocoaPods) invokes Gradle to compile the shared framework — which is why the
-JDK version matters. Gradle output is cached between builds.
-
-### When to Rebuild
-
-Every change to Kotlin or Swift code needs `builder ios build` followed by
-`builder dev kmp` again. Use `--skip-install --bundle-id <id>` to relaunch an
-app that is already installed.
-
-### Troubleshooting
-
-**Build fails with "Unsupported class file major version" or a Gradle JDK error**
-- The project needs a different JDK than the default: set `kmp.jdkVersion` in `builder.json` to match what the project uses locally
-
-**Build fails with "SDK does not contain 'libarclite'"**
-- An old Kotlin/Native version against a newer Xcode; upgrade the Kotlin plugin in Gradle
-
-**App launches then immediately exits**
-- Launch with `builder dev kmp --logs` to see the device output
-
-## Build Limits
-
-GitHub Actions free tier:
-- 2,000 minutes/month (macOS uses 10x multiplier = ~200 effective minutes)
-- Approximately 15-20 builds per month
+- A one-time GitHub App browser setup and private-repository selection cannot be completed safely by the CLI alone.
+- Repository/source names and workflow inputs are public metadata even though source contents and outputs are encrypted.
+- A malicious project or dependency runs as the runner user and is not strongly sandboxed.
+- The central hosted-runner design has the policy caveat described in [COMPLIANCE.md](COMPLIANCE.md).
+- Central v1 produces unsigned IPAs only.
+- Private GitHub SSH aliases are rejected in central mode because the CLI cannot prove an alias resolves to GitHub; use an explicit `git@github.com:OWNER/REPO.git` or `https://github.com/OWNER/REPO.git` remote.
+- Failed artifact deletion is non-fatal; ciphertext expires after one day.
 
 ## License
 
-[MIT License](LICENSE)
+MIT. The original license and Git history are retained. See [LICENSE](LICENSE) and [docs/UPSTREAM.md](docs/UPSTREAM.md).
