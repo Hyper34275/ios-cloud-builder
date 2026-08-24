@@ -5,6 +5,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -141,6 +142,9 @@ func TestCapacitorAndXcodeGenDetection(t *testing.T) {
 }
 
 func TestMakeGradleWrapperExecutable(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows does not expose POSIX executable mode bits")
+	}
 	root := t.TempDir()
 	wrapper := filepath.Join(root, "gradlew")
 	if err := os.WriteFile(wrapper, []byte("#!/bin/sh\n"), 0600); err != nil {

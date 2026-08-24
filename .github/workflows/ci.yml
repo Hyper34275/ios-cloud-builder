@@ -27,6 +27,7 @@ jobs:
         uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
         with:
           go-version: ${{ matrix.go }}
+          cache: false
 
       - name: Download dependencies
         run: go mod download
@@ -47,7 +48,10 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
         with:
-          go-version: '1.27'
+          # golangci-lint v2.12.2 predates Go 1.27 language changes. Lint with
+          # the minimum supported toolchain; the test matrix still covers 1.27.
+          go-version: '1.24'
+          cache: false
 
       - name: Check formatting
         run: |
@@ -57,8 +61,7 @@ jobs:
       - name: Run go vet
         run: go vet ./...
 
-      # golangci-lint cannot read export data from a Go newer than the one it was
-      # built with, so this version must keep pace with go-version above.
+      # Keep this pinned; upgrade it before linting with a newer Go toolchain.
       - name: Run golangci-lint
         uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9
         with:
@@ -78,6 +81,7 @@ jobs:
         uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
         with:
           go-version: '1.27'
+          cache: false
 
       - name: Build all platforms
         run: |

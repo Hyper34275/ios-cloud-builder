@@ -22,7 +22,10 @@ func TestCentralWorkflowSecurityProperties(t *testing.T) {
 	if !bytes.Equal(rootWorkflow, template) {
 		t.Fatal("root central workflow and embedded template differ")
 	}
-	text := string(rootWorkflow)
+	// Git for Windows commonly checks text files out with CRLF. Normalize only
+	// for semantic assertions; byte identity above still protects the embedded
+	// workflow from drifting from the repository copy.
+	text := strings.ReplaceAll(string(rootWorkflow), "\r\n", "\n")
 	for _, required := range []string{
 		"workflow_dispatch:", "permissions:\n  contents: read", "runs-on: macos-15",
 		"path: builder", "path: source", "persist-credentials: false",

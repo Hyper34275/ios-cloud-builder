@@ -443,5 +443,7 @@ func packageIPA(run executor, appPath, outputPath string) error {
 
 func pathWithin(root, path string) bool {
 	relative, err := filepath.Rel(root, path)
-	return err == nil && relative != ".." && !strings.HasPrefix(relative, "../") && !filepath.IsAbs(relative)
+	return err == nil && relative != ".." &&
+		!strings.HasPrefix(relative, ".."+string(filepath.Separator)) &&
+		!filepath.IsAbs(relative)
 }

@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -181,7 +182,7 @@ func TestAtomicWritePrivate(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if info.Mode().Perm() != 0600 {
+	if runtime.GOOS != "windows" && info.Mode().Perm() != 0600 {
 		t.Fatalf("mode = %v; want 0600", info.Mode().Perm())
 	}
 }
