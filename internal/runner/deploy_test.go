@@ -74,6 +74,15 @@ func TestProfileAuthorizesIdentity(t *testing.T) {
 	}
 }
 
+func TestSigningIdentityPatternCapturesFingerprintAndName(t *testing.T) {
+	output := `  1) 3A1C0EDBC4757C7C1CECE2469D5A878EEA8C2292 "Apple Distribution: Example (TEAM123456)"`
+	match := identityPattern.FindStringSubmatch(output)
+	if len(match) != 3 || match[1] != "3A1C0EDBC4757C7C1CECE2469D5A878EEA8C2292" ||
+		match[2] != "Apple Distribution: Example (TEAM123456)" {
+		t.Fatalf("identity match = %#v", match)
+	}
+}
+
 func TestExtractUnsignedIPARejectsTraversalAndSymlink(t *testing.T) {
 	for name, entries := range map[string]map[string]zipEntry{
 		"traversal": {"Payload/App.app/../../secret": {data: "x", mode: 0600}},

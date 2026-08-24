@@ -33,7 +33,7 @@ var (
 	ErrDeployFailed = errors.New("private TestFlight deployment failed; download the encrypted diagnostic log")
 	appleIDPattern  = regexp.MustCompile(`^[A-Z0-9]{10}$`)
 	issuerPattern   = regexp.MustCompile(`^[0-9a-fA-F-]{36}$`)
-	identityPattern = regexp.MustCompile(`\b[0-9A-Fa-f]{40}\b`)
+	identityPattern = regexp.MustCompile(`(?m)^\s*[0-9]+\)\s+([0-9A-Fa-f]{40})\s+"([^"\r\n]+)"`)
 	buildPattern    = regexp.MustCompile(`^[1-9][0-9]{0,17}(?:\.[1-9][0-9]{0,17}){0,2}$`)
 )
 
@@ -229,10 +229,12 @@ func deployTestFlight(ctx context.Context, options *TestFlightOptions, credentia
 	if err != nil {
 		return err
 	}
-	signingIdentity := identityPattern.FindString(string(identityOutput))
-	if signingIdentity == "" {
+	identityMatch := identityPattern.FindStringSubmatch(string(identityOutput))
+	if len(identityMatch) != 3 || !strings.HasPrefix(identityMatch[2], "Apple Distribution: ") ||
+		!strings.HasSuffix(identityMatch[2], "("+credentials.teamID+")") {
 		return fmt.Errorf("distribution signing identity was not imported")
 	}
+	identityFingerprint, signingIdentity := identityMatch[1], identityMatch[2]
 
 	profileOutput, err := run.capture(workRoot, "/usr/bin/security", "cms", "-D", "-i", profilePath, "-k", keychainPath)
 	if err != nil {
@@ -248,7 +250,7 @@ func deployTestFlight(ctx context.Context, options *TestFlightOptions, credentia
 	if err := validateAppStoreProfile(&profile); err != nil {
 		return err
 	}
-	if !profileAuthorizesIdentity(profile.DeveloperCertificates, signingIdentity) {
+	if !profileAuthorizesIdentity(profile.DeveloperCertificates, identityFingerprint) {
 		return fmt.Errorf("distribution certificate is not authorized by the provisioning profile")
 	}
 	bundleID, err := readBundleID(filepath.Join(appPath, "Info.plist"))
