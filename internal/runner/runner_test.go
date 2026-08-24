@@ -33,7 +33,8 @@ func validInputs(t *testing.T) Inputs {
 }
 
 func TestInputsValidate(t *testing.T) {
-	if err := validInputs(t).Validate(); err != nil {
+	valid := validInputs(t)
+	if err := valid.Validate(); err != nil {
 		t.Fatalf("valid inputs rejected: %v", err)
 	}
 	tests := []struct {

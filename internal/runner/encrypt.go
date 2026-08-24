@@ -32,8 +32,7 @@ func EncryptArtifacts(recipientText, logPath, ipaPath, outputDir string) error {
 		removePlaintext(logPath, ipaPath)
 		return fmt.Errorf("secure encrypted artifact directory")
 	}
-	entries, err := os.ReadDir(outputDir)
-	if err != nil {
+	if _, err := os.ReadDir(outputDir); err != nil {
 		removePlaintext(logPath, ipaPath)
 		return fmt.Errorf("inspect encrypted artifact directory")
 	}
@@ -43,7 +42,7 @@ func EncryptArtifacts(recipientText, logPath, ipaPath, outputDir string) error {
 			return fmt.Errorf("clean encrypted artifact destination")
 		}
 	}
-	entries, err = os.ReadDir(outputDir)
+	entries, err := os.ReadDir(outputDir)
 	if err != nil || len(entries) != 0 {
 		removePlaintext(logPath, ipaPath)
 		return fmt.Errorf("encrypted artifact directory is not empty")

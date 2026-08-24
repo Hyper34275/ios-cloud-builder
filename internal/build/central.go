@@ -413,7 +413,7 @@ func validateIPA(data []byte) error {
 		return fmt.Errorf("parse app Info.plist: %w", err)
 	}
 	if info.Executable == "" || filepath.Base(info.Executable) != info.Executable {
-		return errors.New("Info.plist has invalid CFBundleExecutable")
+		return errors.New("invalid CFBundleExecutable in Info.plist")
 	}
 	executable := files[appPath+"/"+info.Executable]
 	if executable == nil || !executable.Mode().IsRegular() || executable.UncompressedSize64 == 0 {
@@ -479,7 +479,7 @@ func atomicWritePrivate(path string, data []byte) error {
 		return err
 	}
 	tmpName := tmp.Name()
-	defer os.Remove(tmpName)
+	defer func() { _ = os.Remove(tmpName) }()
 	if err := tmp.Chmod(0600); err != nil {
 		tmp.Close()
 		return err

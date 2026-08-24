@@ -188,7 +188,7 @@ func (s *IdentityStore) storeToFile(value string) error {
 	if err := f.Chmod(0600); err != nil {
 		return fmt.Errorf("secure AGE identity file: %w", err)
 	}
-	if _, err := io.WriteString(f, strings.TrimSpace(value)+"\n"); err != nil {
+	if _, err := f.WriteString(strings.TrimSpace(value) + "\n"); err != nil {
 		return fmt.Errorf("write AGE identity file: %w", err)
 	}
 	if err := f.Sync(); err != nil {

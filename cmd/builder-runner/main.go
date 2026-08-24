@@ -127,7 +127,7 @@ func execute(args []string) error {
 		return fmt.Errorf("invalid secure execution arguments")
 	}
 	fmt.Println("Building iOS application; detailed output is private")
-	if err := runner.ExecuteSecure(context.Background(), options, recipient, outputDir); err != nil {
+	if err := runner.ExecuteSecure(context.Background(), &options, recipient, outputDir); err != nil {
 		if err == runner.ErrBuildFailed {
 			return runner.ErrBuildFailed
 		}

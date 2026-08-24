@@ -29,7 +29,7 @@ type BuildOptions struct {
 // ExecuteSecure keeps the trusted runner resident while private project code
 // executes and while its outputs are encrypted. A project script therefore
 // cannot replace the helper between the build and encryption steps.
-func ExecuteSecure(ctx context.Context, options BuildOptions, recipient, encryptedDir string) error {
+func ExecuteSecure(ctx context.Context, options *BuildOptions, recipient, encryptedDir string) error {
 	if err := options.validate(); err != nil {
 		return err
 	}
@@ -55,7 +55,7 @@ func ExecuteSecure(ctx context.Context, options BuildOptions, recipient, encrypt
 // BuildUnsigned executes the supported, fixed iOS build pipeline. Every child
 // process writes only to the private log, receives a scrubbed environment, and
 // is invoked without a shell or eval.
-func BuildUnsigned(ctx context.Context, options BuildOptions) error {
+func BuildUnsigned(ctx context.Context, options *BuildOptions) error {
 	if err := options.validate(); err != nil {
 		return err
 	}
@@ -77,7 +77,7 @@ func BuildUnsigned(ctx context.Context, options BuildOptions) error {
 	return nil
 }
 
-func (options BuildOptions) validate() error {
+func (options *BuildOptions) validate() error {
 	if !validFramework(options.Framework) || options.Framework == FrameworkAuto {
 		return fmt.Errorf("invalid resolved framework")
 	}
@@ -139,7 +139,7 @@ func (e executor) capture(dir, program string, args ...string) ([]byte, error) {
 	return output.Bytes(), nil
 }
 
-func buildUnsigned(ctx context.Context, options BuildOptions, privateLog io.Writer) error {
+func buildUnsigned(ctx context.Context, options *BuildOptions, privateLog io.Writer) error {
 	sourceRoot, err := filepath.EvalSymlinks(options.SourceRoot)
 	if err != nil {
 		return fmt.Errorf("resolve source checkout: %w", err)
@@ -152,7 +152,7 @@ func buildUnsigned(ctx context.Context, options BuildOptions, privateLog io.Writ
 	if err := os.Mkdir(privateHome, 0700); err != nil {
 		return fmt.Errorf("create isolated build home: %w", err)
 	}
-	defer os.RemoveAll(privateHome)
+	defer func() { _ = os.RemoveAll(privateHome) }()
 	env := ChildEnvironment(sourceRoot, privateHome)
 	run := executor{ctx: ctx, env: env, log: privateLog}
 
@@ -162,12 +162,13 @@ func buildUnsigned(ctx context.Context, options BuildOptions, privateLog io.Writ
 		}
 	}
 	iosRoot := filepath.Join(sourceRoot, options.IOSPath)
-	if options.Framework == FrameworkCordova {
+	switch options.Framework {
+	case FrameworkCordova:
 		if err := run.run(sourceRoot, "npx", "--no-install", "cordova", "prepare", "ios"); err != nil {
 			return err
 		}
 		iosRoot = filepath.Join(sourceRoot, "platforms", "ios")
-	} else if options.Framework == FrameworkIonic {
+	case FrameworkIonic:
 		if isCapacitorProject(sourceRoot) {
 			if err := run.run(sourceRoot, "npx", "--no-install", "cap", "sync", "ios"); err != nil {
 				return err
@@ -227,7 +228,7 @@ func buildUnsigned(ctx context.Context, options BuildOptions, privateLog io.Writ
 		}
 		derivedData := filepath.Join(filepath.Dir(options.LogPath), "DerivedData")
 		_ = os.RemoveAll(derivedData)
-		defer os.RemoveAll(derivedData)
+		defer func() { _ = os.RemoveAll(derivedData) }()
 		args := make([]string, 0, 20)
 		if workspace != "" {
 			args = append(args, "-workspace", workspace)
@@ -423,7 +424,7 @@ func packageIPA(run executor, appPath, outputPath string) error {
 	if err != nil {
 		return fmt.Errorf("prepare IPA package")
 	}
-	defer os.RemoveAll(staging)
+	defer func() { _ = os.RemoveAll(staging) }()
 	payload := filepath.Join(staging, "Payload")
 	if err := os.Mkdir(payload, 0700); err != nil {
 		return fmt.Errorf("prepare IPA payload")

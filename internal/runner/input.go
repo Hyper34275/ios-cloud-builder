@@ -44,7 +44,7 @@ type Inputs struct {
 
 // Validate rejects values that could widen repository access, escape the
 // source checkout, or turn the workflow into a generic command runner.
-func (in Inputs) Validate() error {
+func (in *Inputs) Validate() error {
 	if !buildIDPattern.MatchString(in.BuildID) || in.BuildID == "." || in.BuildID == ".." {
 		return fmt.Errorf("invalid build_id")
 	}
