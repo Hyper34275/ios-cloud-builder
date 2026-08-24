@@ -72,6 +72,12 @@ jobs:
           path: builder
           persist-credentials: false
 
+      - name: Set up trusted Go toolchain
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16
+        with:
+          go-version-file: builder/go.mod
+          cache: false
+
       - name: Build trusted runner before private checkout
         working-directory: builder
         run: |

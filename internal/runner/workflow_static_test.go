@@ -29,6 +29,7 @@ func TestCentralWorkflowSecurityProperties(t *testing.T) {
 	for _, required := range []string{
 		"workflow_dispatch:", "permissions:\n  contents: read", "runs-on: macos-15",
 		"path: builder", "path: source", "persist-credentials: false",
+		"Set up trusted Go toolchain", "go-version-file: builder/go.mod", "cache: false",
 		"submodules: false", "lfs: false",
 		"APP_CLIENT_ID", "APP_PRIVATE_KEY", "repositories: ${{ inputs.source_repo }}",
 		"client-id: ${{ vars.APP_CLIENT_ID }}",
@@ -63,6 +64,7 @@ func TestCentralWorkflowSecurityProperties(t *testing.T) {
 		}
 	}
 	ordered := []string{
+		"Set up trusted Go toolchain",
 		"Build trusted runner before private checkout",
 		"Validate all dispatch inputs before credential creation",
 		"Create repository-scoped GitHub App token",
