@@ -237,7 +237,7 @@ func deployTestFlight(ctx context.Context, options *TestFlightOptions, credentia
 	if profile.UUID == "" || profile.Name == "" || len(profile.TeamIdentifier) != 1 || profile.TeamIdentifier[0] != credentials.teamID {
 		return fmt.Errorf("provisioning profile does not match APPLE_TEAM_ID")
 	}
-	if err := validateAppStoreProfile(profile); err != nil {
+	if err := validateAppStoreProfile(&profile); err != nil {
 		return err
 	}
 	if !profileAuthorizesIdentity(profile.DeveloperCertificates, signingIdentity) {
@@ -276,10 +276,10 @@ func deployTestFlight(ctx context.Context, options *TestFlightOptions, credentia
 		return fmt.Errorf("signed IPA packaging produced no output")
 	}
 	if err := run.runSensitive(workRoot, "/usr/bin/xcrun", altoolArgs("--validate-app", signedIPA, credentials)...); err != nil {
-		return fmt.Errorf("App Store Connect validation failed")
+		return fmt.Errorf("validation with App Store Connect failed")
 	}
 	if err := run.runSensitive(workRoot, "/usr/bin/xcrun", altoolArgs("--upload-app", signedIPA, credentials)...); err != nil {
-		return fmt.Errorf("App Store Connect upload failed")
+		return fmt.Errorf("upload to App Store Connect failed")
 	}
 	_, _ = fmt.Fprintln(privateLog, "App Store Connect accepted the signed IPA upload.")
 	return nil
@@ -323,7 +323,7 @@ func extractUnsignedIPA(ipaPath, destinationRoot string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("open unsigned IPA")
 	}
-	defer reader.Close()
+	defer func() { _ = reader.Close() }()
 	if len(reader.File) == 0 || len(reader.File) > maxDeployEntries {
 		return "", fmt.Errorf("invalid unsigned IPA entry count")
 	}
@@ -513,7 +513,7 @@ func profileMatchesBundle(applicationID, teamID, bundleID string) bool {
 	return strings.HasPrefix(applicationID, prefix) && strings.TrimPrefix(applicationID, prefix) == bundleID
 }
 
-func validateAppStoreProfile(profile provisioningProfile) error {
+func validateAppStoreProfile(profile *provisioningProfile) error {
 	if profile.ExpirationDate.IsZero() || !profile.ExpirationDate.After(time.Now().Add(5*time.Minute)) {
 		return fmt.Errorf("provisioning profile is expired or near expiry")
 	}

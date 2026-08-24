@@ -109,7 +109,7 @@ func ValidateProductionEnvironment(environment *Environment, policies []Deployme
 			continue
 		}
 		if rule.PreventSelfReview {
-			return errors.New("Prevent self-review must be disabled for the single-operator workflow")
+			return errors.New("prevent self-review must be disabled for the single-operator workflow")
 		}
 		if len(rule.Reviewers) == 0 {
 			return errors.New("required reviewer rule has no reviewers")

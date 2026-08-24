@@ -39,7 +39,7 @@ func TestValidateAppStoreProfile(t *testing.T) {
 		DeveloperCertificates: [][]byte{[]byte("certificate")},
 		Entitlements:          map[string]any{"get-task-allow": false},
 	}
-	if err := validateAppStoreProfile(valid); err != nil {
+	if err := validateAppStoreProfile(&valid); err != nil {
 		t.Fatalf("valid profile rejected: %v", err)
 	}
 	for name, mutate := range map[string]func(*provisioningProfile){
@@ -55,7 +55,7 @@ func TestValidateAppStoreProfile(t *testing.T) {
 			profile.DeveloperCertificates = append([][]byte(nil), valid.DeveloperCertificates...)
 			profile.Entitlements = map[string]any{"get-task-allow": false}
 			mutate(&profile)
-			if err := validateAppStoreProfile(profile); err == nil {
+			if err := validateAppStoreProfile(&profile); err == nil {
 				t.Fatal("unsafe profile was accepted")
 			}
 		})
@@ -233,10 +233,11 @@ func TestSetBundleBuildNumber(t *testing.T) {
 }
 
 func TestTestFlightBuildNumberValidation(t *testing.T) {
+	root := t.TempDir()
 	for _, number := range []string{"", "0", "01", "1.", "1.a", "1.2.3.4"} {
 		options := &TestFlightOptions{
-			EncryptedIPAPath: "/tmp/intermediate/App.ipa.age",
-			LogPath:          "/tmp/private-output/build.log",
+			EncryptedIPAPath: filepath.Join(root, "intermediate", "App.ipa.age"),
+			LogPath:          filepath.Join(root, "private-output", "build.log"),
 			BuildNumber:      number,
 		}
 		if err := options.validate(); err == nil {
@@ -245,8 +246,8 @@ func TestTestFlightBuildNumberValidation(t *testing.T) {
 	}
 	for _, number := range []string{"1", "42.1", "9999.99.99"} {
 		options := &TestFlightOptions{
-			EncryptedIPAPath: "/tmp/intermediate/App.ipa.age",
-			LogPath:          "/tmp/private-output/build.log",
+			EncryptedIPAPath: filepath.Join(root, "intermediate", "App.ipa.age"),
+			LogPath:          filepath.Join(root, "private-output", "build.log"),
 			BuildNumber:      number,
 		}
 		if err := options.validate(); err != nil {
