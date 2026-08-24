@@ -3,12 +3,55 @@ package runner_test
 import (
 	"bytes"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
 
 	"github.com/MobAI-App/ios-builder/internal/workflow"
 )
+
+func TestPublicWorkflowsDisableSetupGoCaches(t *testing.T) {
+	t.Parallel()
+
+	workflowPaths, err := filepath.Glob("../../.github/workflows/*.yml")
+	if err != nil {
+		t.Fatalf("glob public workflows: %v", err)
+	}
+	if len(workflowPaths) == 0 {
+		t.Fatal("no public workflows found")
+	}
+
+	for _, workflowPath := range workflowPaths {
+		contents, readErr := os.ReadFile(workflowPath)
+		if readErr != nil {
+			t.Fatalf("read %s: %v", workflowPath, readErr)
+		}
+		lines := strings.Split(string(contents), "\n")
+		for index, line := range lines {
+			if !strings.Contains(line, "uses: actions/setup-go@") {
+				continue
+			}
+
+			stepIndent := len(line) - len(strings.TrimLeft(line, " "))
+			cacheDisabled := false
+			for next := index + 1; next < len(lines); next++ {
+				trimmed := strings.TrimSpace(lines[next])
+				indent := len(lines[next]) - len(strings.TrimLeft(lines[next], " "))
+				if strings.HasPrefix(trimmed, "- ") && indent < stepIndent {
+					break
+				}
+				if trimmed == "cache: false" {
+					cacheDisabled = true
+					break
+				}
+			}
+			if !cacheDisabled {
+				t.Errorf("%s:%d setup-go must explicitly set cache: false", workflowPath, index+1)
+			}
+		}
+	}
+}
 
 func TestCentralWorkflowSecurityProperties(t *testing.T) {
 	rootWorkflow, err := os.ReadFile("../../.github/workflows/ios-build.yml")
