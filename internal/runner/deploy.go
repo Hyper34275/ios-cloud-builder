@@ -232,7 +232,7 @@ func deployTestFlight(ctx context.Context, options *TestFlightOptions, credentia
 		return fmt.Errorf("distribution signing identity was not imported")
 	}
 
-	profileOutput, err := run.capture(workRoot, "/usr/bin/security", "cms", "-D", "-i", profilePath)
+	profileOutput, err := run.capture(workRoot, "/usr/bin/security", "cms", "-D", "-i", profilePath, "-k", keychainPath)
 	if err != nil {
 		return err
 	}
