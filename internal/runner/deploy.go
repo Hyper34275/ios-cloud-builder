@@ -153,7 +153,8 @@ func deployTestFlight(ctx context.Context, options *TestFlightOptions, credentia
 	if err := os.Mkdir(privateHome, 0700); err != nil {
 		return fmt.Errorf("prepare isolated deployment home")
 	}
-	run := executor{ctx: ctx, env: ChildEnvironment(workRoot, privateHome), log: privateLog}
+	deployEnv := append(ChildEnvironment(workRoot, privateHome), "CFFIXED_USER_HOME="+privateHome)
+	run := executor{ctx: ctx, env: deployEnv, log: privateLog}
 
 	identity, err := age.ParseX25519Identity(credentials.ageIdentity)
 	if err != nil {
@@ -211,7 +212,7 @@ func deployTestFlight(ctx context.Context, options *TestFlightOptions, credentia
 	if err := run.runSensitive(workRoot, "/usr/bin/security", "import", p12Path, "-P", credentials.p12Password, "-A", "-t", "cert", "-f", "pkcs12", "-k", keychainPath); err != nil {
 		return err
 	}
-	if err := run.runSensitive(workRoot, "/usr/bin/security", "set-key-partition-list", "-S", "apple-tool:,apple:", "-k", keychainPassword, keychainPath); err != nil {
+	if err := run.runSensitive(workRoot, "/usr/bin/security", "set-key-partition-list", "-S", "apple-tool:,apple:", "-s", "-k", keychainPassword, keychainPath); err != nil {
 		return err
 	}
 	if err := run.runSensitive(workRoot, "/usr/bin/security", "list-keychains", "-d", "user", "-s", keychainPath); err != nil {
