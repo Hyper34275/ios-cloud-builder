@@ -153,8 +153,12 @@ func deployTestFlight(ctx context.Context, options *TestFlightOptions, credentia
 	if err := os.Mkdir(privateHome, 0700); err != nil {
 		return fmt.Errorf("prepare isolated deployment home")
 	}
-	deployEnv := append(ChildEnvironment(workRoot, privateHome), "CFFIXED_USER_HOME="+privateHome)
-	run := executor{ctx: ctx, env: deployEnv, log: privateLog}
+	signingHome := strings.TrimSpace(os.Getenv("HOME"))
+	if !filepath.IsAbs(signingHome) {
+		return fmt.Errorf("prepare signing environment")
+	}
+	run := executor{ctx: ctx, env: ChildEnvironment(workRoot, signingHome), log: privateLog}
+	uploadRun := executor{ctx: ctx, env: ChildEnvironment(workRoot, privateHome), log: privateLog}
 
 	identity, err := age.ParseX25519Identity(credentials.ageIdentity)
 	if err != nil {
@@ -219,12 +223,7 @@ func deployTestFlight(ctx context.Context, options *TestFlightOptions, credentia
 	if err := run.runSensitive(workRoot, "/usr/bin/security", "list-keychains", "-d", "user", "-s", keychainPath); err != nil {
 		return err
 	}
-	// security cms consults the user's default keychain even when it only
-	// decodes a provisioning profile. The deployment HOME is intentionally
-	// isolated and starts without one, so point it at the disposable keychain.
-	if err := run.runSensitive(workRoot, "/usr/bin/security", "default-keychain", "-d", "user", "-s", keychainPath); err != nil {
-		return err
-	}
+	// Keep code-signing identity discovery scoped to the disposable keychain.
 	identityOutput, err := run.capture(workRoot, "/usr/bin/security", "find-identity", "-v", "-p", "codesigning", keychainPath)
 	if err != nil {
 		return err
@@ -285,10 +284,10 @@ func deployTestFlight(ctx context.Context, options *TestFlightOptions, credentia
 	if err != nil || !info.Mode().IsRegular() || info.Size() == 0 {
 		return fmt.Errorf("signed IPA packaging produced no output")
 	}
-	if err := run.runSensitive(workRoot, "/usr/bin/xcrun", altoolArgs("--validate-app", signedIPA, credentials)...); err != nil {
+	if err := uploadRun.runSensitive(workRoot, "/usr/bin/xcrun", altoolArgs("--validate-app", signedIPA, credentials)...); err != nil {
 		return fmt.Errorf("validation with App Store Connect failed")
 	}
-	if err := run.runSensitive(workRoot, "/usr/bin/xcrun", altoolArgs("--upload-app", signedIPA, credentials)...); err != nil {
+	if err := uploadRun.runSensitive(workRoot, "/usr/bin/xcrun", altoolArgs("--upload-app", signedIPA, credentials)...); err != nil {
 		return fmt.Errorf("upload to App Store Connect failed")
 	}
 	_, _ = fmt.Fprintln(privateLog, "App Store Connect accepted the signed IPA upload.")
