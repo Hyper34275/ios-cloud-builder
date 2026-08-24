@@ -209,10 +209,11 @@ func deployTestFlight(ctx context.Context, options *TestFlightOptions, credentia
 	if err := run.runSensitive(workRoot, "/usr/bin/security", "unlock-keychain", "-p", keychainPassword, keychainPath); err != nil {
 		return err
 	}
-	if err := run.runSensitive(workRoot, "/usr/bin/security", "import", p12Path, "-P", credentials.p12Password, "-A", "-t", "cert", "-f", "pkcs12", "-k", keychainPath); err != nil {
+	if err := run.runSensitive(workRoot, "/usr/bin/security", "import", p12Path, "-P", credentials.p12Password,
+		"-T", "/usr/bin/codesign", "-t", "cert", "-f", "pkcs12", "-k", keychainPath); err != nil {
 		return err
 	}
-	if err := run.runSensitive(workRoot, "/usr/bin/security", "set-key-partition-list", "-S", "apple-tool:,apple:", "-s", "-k", keychainPassword, keychainPath); err != nil {
+	if err := run.runSensitive(workRoot, "/usr/bin/security", "set-key-partition-list", "-S", "apple-tool:,apple:,codesign:", "-s", "-k", keychainPassword, keychainPath); err != nil {
 		return err
 	}
 	if err := run.runSensitive(workRoot, "/usr/bin/security", "list-keychains", "-d", "user", "-s", keychainPath); err != nil {
