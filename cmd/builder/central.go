@@ -44,6 +44,7 @@ func init() {
 	centralSetupCmd.Flags().String("scheme", "", "Xcode scheme (auto-detected when empty)")
 	centralSetupCmd.Flags().String("configuration", "Debug", "Build configuration: Debug or Release")
 	centralDoctorCmd.Flags().StringP("remote", "r", "origin", "Private source git remote")
+	centralDoctorCmd.Flags().Bool("testflight", false, "Also verify apple-production metadata without reading secret values")
 }
 
 func runCentralSetup(cmd *cobra.Command, _ []string) error {
@@ -139,6 +140,7 @@ func runCentralDoctor(cmd *cobra.Command, _ []string) error {
 	}
 	var authSource string
 	var client *github.Client
+	var publicRepository *github.Repository
 	checks := []check{
 		{"git executable", func(context.Context) error { _, err := exec.LookPath("git"); return err }},
 		{"configuration", func(context.Context) error { return cfg.Validate() }},
@@ -169,7 +171,8 @@ func runCentralDoctor(cmd *cobra.Command, _ []string) error {
 			return err
 		}},
 		{"public builder API access", func(ctx context.Context) error {
-			_, err := client.GetRepository(ctx, cfg.Builder.Owner, cfg.Builder.Repo)
+			var err error
+			publicRepository, err = client.GetRepository(ctx, cfg.Builder.Owner, cfg.Builder.Repo)
 			return err
 		}},
 		{"central workflow", func(ctx context.Context) error {
@@ -201,6 +204,43 @@ func runCentralDoctor(cmd *cobra.Command, _ []string) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	testFlight, _ := cmd.Flags().GetBool("testflight")
+	if testFlight {
+		checks = append(checks,
+			check{"APPLE_SIGNING_RECIPIENT variable", func(ctx context.Context) error {
+				_, err := client.GetActionVariable(ctx, cfg.Builder.Owner, cfg.Builder.Repo, "APPLE_SIGNING_RECIPIENT")
+				return err
+			}},
+			check{"apple-production protection rules", func(ctx context.Context) error {
+				environment, err := client.GetEnvironment(ctx, cfg.Builder.Owner, cfg.Builder.Repo, "apple-production")
+				if err != nil {
+					return err
+				}
+				policies, err := client.GetDeploymentBranchPolicies(ctx, cfg.Builder.Owner, cfg.Builder.Repo, "apple-production")
+				if err != nil {
+					return err
+				}
+				if publicRepository == nil || publicRepository.DefaultRef == "" {
+					return errors.New("public builder default branch metadata is missing")
+				}
+				return github.ValidateProductionEnvironment(environment, policies, publicRepository.DefaultRef)
+			}},
+			check{"APPLE_TEAM_ID environment variable", func(ctx context.Context) error {
+				_, err := client.GetEnvironmentActionVariable(ctx, cfg.Builder.Owner, cfg.Builder.Repo, "apple-production", "APPLE_TEAM_ID")
+				return err
+			}},
+		)
+		for _, name := range []string{
+			"APPLE_SIGNING_AGE_IDENTITY", "APPLE_DISTRIBUTION_P12", "APPLE_DISTRIBUTION_P12_PASSWORD",
+			"APPLE_PROVISIONING_PROFILE", "ASC_API_KEY_P8", "ASC_KEY_ID",
+		} {
+			secretName := name
+			checks = append(checks, check{secretName + " environment secret", func(ctx context.Context) error {
+				_, err := client.GetEnvironmentActionSecret(ctx, cfg.Builder.Owner, cfg.Builder.Repo, "apple-production", secretName)
+				return err
+			}})
+		}
+	}
 	for _, item := range checks {
 		if err := item.fn(ctx); err != nil {
 			fmt.Printf("FAIL  %s: %v\n", item.name, err)
@@ -212,6 +252,10 @@ func runCentralDoctor(cmd *cobra.Command, _ []string) error {
 			fmt.Printf("OK    %s\n", item.name)
 		}
 	}
-	fmt.Println("Central builder is ready.")
+	if testFlight {
+		fmt.Println("Central builder and TestFlight Environment metadata are ready.")
+	} else {
+		fmt.Println("Central builder is ready.")
+	}
 	return nil
 }

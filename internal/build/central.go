@@ -26,6 +26,7 @@ import (
 
 const (
 	centralArtifactPrefix = "ios-builder-"
+	centralDeployPrefix   = "ios-builder-deploy-"
 	centralIPAFile        = "App.ipa.age"
 	centralLogFile        = "build.log.age"
 
@@ -52,7 +53,7 @@ func (c *Coordinator) buildCentral(parent context.Context, opts BuildOptions) (*
 	defer cancel()
 
 	buildID := uuid.NewString()
-	result := &BuildResult{BuildID: buildID}
+	result := &BuildResult{BuildID: buildID, TestFlight: opts.TestFlight}
 	c.progress.Start(buildID)
 
 	if err := c.config.Validate(); err != nil {
@@ -82,7 +83,7 @@ func (c *Coordinator) buildCentral(parent context.Context, opts BuildOptions) (*
 
 	owner, repo, workflow := c.config.Builder.Owner, c.config.Builder.Repo, c.config.Builder.Workflow
 	c.progress.Update(PhaseTriggering, "Triggering central GitHub Actions build...")
-	if err := c.github.TriggerWorkflow(ctx, owner, repo, workflow, centralDispatchInputs(c.config, buildID, ref)); err != nil {
+	if err := c.github.TriggerWorkflow(ctx, owner, repo, workflow, centralDispatchInputs(c.config, buildID, ref, opts.TestFlight)); err != nil {
 		c.progress.Error(PhaseTriggering, err)
 		return result, fmt.Errorf("failed to trigger central workflow: %w", err)
 	}
@@ -121,13 +122,27 @@ func (c *Coordinator) buildCentral(parent context.Context, opts BuildOptions) (*
 	}
 	runCompleted = true
 
-	artifactName := centralArtifactPrefix + buildID
-	artifact, err := c.github.PollForRunArtifact(ctx, owner, repo, run.ID, artifactName, artifactIndexTimeout)
+	baseArtifact, err := c.github.PollForRunArtifact(ctx, owner, repo, run.ID, centralArtifactPrefix+buildID, artifactIndexTimeout)
 	if err != nil {
 		c.progress.Error(PhaseBuilding, err)
 		return result, fmt.Errorf("encrypted build artifact unavailable: %w", err)
 	}
-	defer c.deleteCentralArtifact(owner, repo, artifact.ID)
+	defer c.deleteCentralArtifact(owner, repo, baseArtifact.ID)
+	artifact := baseArtifact
+	if opts.TestFlight {
+		deployName := centralDeployPrefix + buildID
+		if run.Conclusion == "success" {
+			artifact, err = c.github.PollForRunArtifact(ctx, owner, repo, run.ID, deployName, artifactIndexTimeout)
+			if err != nil {
+				return result, fmt.Errorf("encrypted TestFlight diagnostic unavailable: %w", err)
+			}
+		} else if deployArtifact, findErr := c.github.FindArtifactByName(ctx, owner, repo, run.ID, deployName); findErr == nil {
+			artifact = deployArtifact
+		}
+		if artifact.ID != baseArtifact.ID {
+			defer c.deleteCentralArtifact(owner, repo, artifact.ID)
+		}
+	}
 
 	c.progress.Update(PhaseDownloading, "Downloading encrypted build artifact...")
 	contents, err := c.downloadCentralArtifact(ctx, owner, repo, artifact)
@@ -145,7 +160,17 @@ func (c *Coordinator) buildCentral(parent context.Context, opts BuildOptions) (*
 		result.LogPath = logPath
 		result.Duration = time.Since(started)
 		c.progress.Error(PhaseBuilding, fmt.Errorf("workflow concluded %s", run.Conclusion))
-		return result, fmt.Errorf("build failed with conclusion %s; decrypted diagnostics: %s", run.Conclusion, logPath)
+		kind := "build"
+		if opts.TestFlight {
+			kind = "TestFlight deployment"
+		}
+		return result, fmt.Errorf("%s failed with conclusion %s; decrypted diagnostics: %s", kind, run.Conclusion, logPath)
+	}
+	if opts.TestFlight {
+		result.Duration = time.Since(started)
+		c.progress.Complete(PhaseBuilding, "Signed upload accepted by App Store Connect")
+		c.progress.Finish()
+		return result, nil
 	}
 	if len(contents.ipa) == 0 {
 		return result, errors.New("successful central artifact is missing App.ipa.age")
@@ -194,7 +219,10 @@ func (c *Coordinator) DownloadLogs(ctx context.Context, buildID, outputDir strin
 	if err != nil {
 		return "", err
 	}
-	artifact, err := c.github.FindArtifactByName(ctx, owner, repo, run.ID, centralArtifactPrefix+buildID)
+	artifact, err := c.github.FindArtifactByName(ctx, owner, repo, run.ID, centralDeployPrefix+buildID)
+	if err != nil {
+		artifact, err = c.github.FindArtifactByName(ctx, owner, repo, run.ID, centralArtifactPrefix+buildID)
+	}
 	if err != nil {
 		return "", err
 	}
@@ -225,7 +253,7 @@ func centralIdentity(cfg *config.Config) (*age.X25519Identity, error) {
 	return identity, nil
 }
 
-func centralDispatchInputs(cfg *config.Config, buildID, ref string) map[string]string {
+func centralDispatchInputs(cfg *config.Config, buildID, ref string, testFlight bool) map[string]string {
 	inputs := map[string]string{
 		"build_id":           buildID,
 		"source_owner":       cfg.GitHub.Owner,
@@ -234,6 +262,7 @@ func centralDispatchInputs(cfg *config.Config, buildID, ref string) map[string]s
 		"ios_path":           ".",
 		"framework_hint":     frameworkHint(cfg),
 		"artifact_recipient": strings.TrimSpace(cfg.Security.Recipient),
+		"operation":          "build",
 	}
 	if cfg.IOS.Path != "" {
 		inputs["ios_path"] = cfg.IOS.Path
@@ -241,7 +270,10 @@ func centralDispatchInputs(cfg *config.Config, buildID, ref string) map[string]s
 	if cfg.IOS.Scheme != "" {
 		inputs["scheme"] = cfg.IOS.Scheme
 	}
-	if cfg.IOS.Configuration != "" {
+	if testFlight {
+		inputs["operation"] = "testflight"
+		inputs["configuration"] = "Release"
+	} else if cfg.IOS.Configuration != "" {
 		inputs["configuration"] = cfg.IOS.Configuration
 	}
 	return inputs

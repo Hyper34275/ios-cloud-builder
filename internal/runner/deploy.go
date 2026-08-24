@@ -1,0 +1,592 @@
+package runner
+
+import (
+	"archive/zip"
+	"context"
+	"crypto/rand"
+	"crypto/sha1" // #nosec G505 -- Apple profile certificate identifiers are SHA-1 fingerprints, not signatures.
+	"encoding/base64"
+	"encoding/hex"
+	"errors"
+	"fmt"
+	"io"
+	"os"
+	"os/exec"
+	"path"
+	"path/filepath"
+	"regexp"
+	"sort"
+	"strings"
+	"time"
+
+	"filippo.io/age"
+	"howett.net/plist"
+)
+
+const (
+	maxDeployIPABytes = int64(1024 * 1024 * 1024)
+	maxDeployEntries  = 100000
+	maxSecretBytes    = 2 * 1024 * 1024
+)
+
+var (
+	ErrDeployFailed = errors.New("private TestFlight deployment failed; download the encrypted diagnostic log")
+	appleIDPattern  = regexp.MustCompile(`^[A-Z0-9]{10}$`)
+	issuerPattern   = regexp.MustCompile(`^[0-9a-fA-F-]{36}$`)
+	identityPattern = regexp.MustCompile(`\b[0-9A-Fa-f]{40}\b`)
+	buildPattern    = regexp.MustCompile(`^[1-9][0-9]{0,17}(?:\.[1-9][0-9]{0,17}){0,2}$`)
+)
+
+// TestFlightOptions identifies only trusted-runner temporary files. Secret
+// values are read from and immediately removed from the process environment.
+type TestFlightOptions struct {
+	EncryptedIPAPath string
+	LogPath          string
+	BuildNumber      string
+}
+
+type appleCredentials struct {
+	ageIdentity string
+	p12         string
+	p12Password string
+	profile     string
+	teamID      string
+	apiKey      string
+	apiKeyID    string
+	issuerID    string
+}
+
+type provisioningProfile struct {
+	UUID                  string         `plist:"UUID"`
+	Name                  string         `plist:"Name"`
+	ExpirationDate        time.Time      `plist:"ExpirationDate"`
+	Platform              []string       `plist:"Platform"`
+	TeamIdentifier        []string       `plist:"TeamIdentifier"`
+	DeveloperCertificates [][]byte       `plist:"DeveloperCertificates"`
+	ProvisionedDevices    []string       `plist:"ProvisionedDevices"`
+	ProvisionsAllDevices  bool           `plist:"ProvisionsAllDevices"`
+	Entitlements          map[string]any `plist:"Entitlements"`
+}
+
+// ExecuteTestFlight decrypts an authenticated unsigned IPA, signs it without
+// executing private project code, uploads it, encrypts diagnostics for the
+// local CLI, and removes every plaintext and credential file.
+func ExecuteTestFlight(ctx context.Context, options *TestFlightOptions, recipient, encryptedDir string) error {
+	if err := options.validate(); err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(options.LogPath), 0700); err != nil {
+		return fmt.Errorf("prepare private deployment output")
+	}
+	logFile, err := os.OpenFile(options.LogPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0600)
+	if err != nil {
+		return fmt.Errorf("prepare private deployment log")
+	}
+	credentials, credentialErr := takeAppleCredentials()
+	deployErr := credentialErr
+	if deployErr == nil {
+		deployErr = deployTestFlight(ctx, options, credentials, logFile)
+	}
+	if deployErr != nil {
+		_, _ = fmt.Fprintf(logFile, "\nDeployment failed: %v\n", deployErr)
+	}
+	_ = logFile.Sync()
+	_ = logFile.Close()
+	if err := EncryptArtifacts(recipient, options.LogPath, "", encryptedDir); err != nil {
+		return fmt.Errorf("encrypt private deployment diagnostics")
+	}
+	if deployErr != nil {
+		return ErrDeployFailed
+	}
+	return nil
+}
+
+func (options *TestFlightOptions) validate() error {
+	if options == nil || !filepath.IsAbs(options.EncryptedIPAPath) || !filepath.IsAbs(options.LogPath) {
+		return fmt.Errorf("deployment paths must be absolute")
+	}
+	if filepath.Base(options.EncryptedIPAPath) != "App.ipa.age" || filepath.Base(options.LogPath) != "build.log" {
+		return fmt.Errorf("invalid deployment paths")
+	}
+	if !buildPattern.MatchString(options.BuildNumber) {
+		return fmt.Errorf("invalid TestFlight build number")
+	}
+	return nil
+}
+
+func takeAppleCredentials() (*appleCredentials, error) {
+	takeRaw := func(name string) string {
+		value := os.Getenv(name)
+		_ = os.Unsetenv(name)
+		return value
+	}
+	take := func(name string) string { return strings.TrimSpace(takeRaw(name)) }
+	credentials := &appleCredentials{
+		ageIdentity: take("APPLE_SIGNING_AGE_IDENTITY"),
+		p12:         take("APPLE_DISTRIBUTION_P12"),
+		p12Password: takeRaw("APPLE_DISTRIBUTION_P12_PASSWORD"),
+		profile:     take("APPLE_PROVISIONING_PROFILE"),
+		teamID:      take("APPLE_TEAM_ID"),
+		apiKey:      take("ASC_API_KEY_P8"),
+		apiKeyID:    take("ASC_KEY_ID"),
+		issuerID:    take("ASC_ISSUER_ID"),
+	}
+	if credentials.ageIdentity == "" || credentials.p12 == "" || credentials.p12Password == "" ||
+		credentials.profile == "" || credentials.teamID == "" || credentials.apiKey == "" ||
+		credentials.apiKeyID == "" {
+		return nil, fmt.Errorf("protected Apple environment is incomplete")
+	}
+	if !appleIDPattern.MatchString(credentials.teamID) || !appleIDPattern.MatchString(credentials.apiKeyID) ||
+		(credentials.issuerID != "" && !issuerPattern.MatchString(credentials.issuerID)) {
+		return nil, fmt.Errorf("protected Apple environment contains invalid identifiers")
+	}
+	return credentials, nil
+}
+
+func deployTestFlight(ctx context.Context, options *TestFlightOptions, credentials *appleCredentials, privateLog io.Writer) error {
+	workRoot, err := os.MkdirTemp(filepath.Dir(options.LogPath), ".testflight-")
+	if err != nil {
+		return fmt.Errorf("prepare deployment workspace")
+	}
+	defer func() { _ = os.RemoveAll(workRoot) }()
+	privateHome := filepath.Join(workRoot, "home")
+	if err := os.Mkdir(privateHome, 0700); err != nil {
+		return fmt.Errorf("prepare isolated deployment home")
+	}
+	run := executor{ctx: ctx, env: ChildEnvironment(workRoot, privateHome), log: privateLog}
+
+	identity, err := age.ParseX25519Identity(credentials.ageIdentity)
+	if err != nil {
+		return fmt.Errorf("parse signing transport identity")
+	}
+	unsignedIPA := filepath.Join(workRoot, "unsigned.ipa")
+	if err := decryptFileBounded(identity, options.EncryptedIPAPath, unsignedIPA, maxDeployIPABytes); err != nil {
+		return err
+	}
+	payloadRoot := filepath.Join(workRoot, "unsigned")
+	appPath, err := extractUnsignedIPA(unsignedIPA, payloadRoot)
+	_ = os.Remove(unsignedIPA)
+	if err != nil {
+		return err
+	}
+	if err := rejectNestedApplications(appPath); err != nil {
+		return err
+	}
+	if err := setBundleBuildNumber(filepath.Join(appPath, "Info.plist"), options.BuildNumber); err != nil {
+		return err
+	}
+
+	secretsDir := filepath.Join(workRoot, "credentials")
+	if err := os.Mkdir(secretsDir, 0700); err != nil {
+		return fmt.Errorf("prepare credential files")
+	}
+	p12Path := filepath.Join(secretsDir, "distribution.p12")
+	profilePath := filepath.Join(secretsDir, "profile.mobileprovision")
+	apiKeyPath := filepath.Join(privateHome, ".appstoreconnect", "private_keys", "AuthKey_"+credentials.apiKeyID+".p8")
+	if err := writeBase64Secret(credentials.p12, p12Path); err != nil {
+		return fmt.Errorf("decode distribution certificate")
+	}
+	if err := writeBase64Secret(credentials.profile, profilePath); err != nil {
+		return fmt.Errorf("decode provisioning profile")
+	}
+	if err := writeTextOrBase64Secret(credentials.apiKey, apiKeyPath, "PRIVATE KEY"); err != nil {
+		return fmt.Errorf("decode App Store Connect key")
+	}
+
+	keychainPath := filepath.Join(workRoot, "signing.keychain-db")
+	keychainPassword, err := randomPassword()
+	if err != nil {
+		return fmt.Errorf("create temporary keychain password")
+	}
+	defer func() { _ = run.runSensitive(workRoot, "/usr/bin/security", "delete-keychain", keychainPath) }()
+	if err := run.runSensitive(workRoot, "/usr/bin/security", "create-keychain", "-p", keychainPassword, keychainPath); err != nil {
+		return err
+	}
+	if err := run.runSensitive(workRoot, "/usr/bin/security", "set-keychain-settings", "-lut", "21600", keychainPath); err != nil {
+		return err
+	}
+	if err := run.runSensitive(workRoot, "/usr/bin/security", "unlock-keychain", "-p", keychainPassword, keychainPath); err != nil {
+		return err
+	}
+	if err := run.runSensitive(workRoot, "/usr/bin/security", "import", p12Path, "-P", credentials.p12Password, "-A", "-t", "cert", "-f", "pkcs12", "-k", keychainPath); err != nil {
+		return err
+	}
+	if err := run.runSensitive(workRoot, "/usr/bin/security", "set-key-partition-list", "-S", "apple-tool:,apple:", "-k", keychainPassword, keychainPath); err != nil {
+		return err
+	}
+	if err := run.runSensitive(workRoot, "/usr/bin/security", "list-keychains", "-d", "user", "-s", keychainPath); err != nil {
+		return err
+	}
+	identityOutput, err := run.capture(workRoot, "/usr/bin/security", "find-identity", "-v", "-p", "codesigning", keychainPath)
+	if err != nil {
+		return err
+	}
+	signingIdentity := identityPattern.FindString(string(identityOutput))
+	if signingIdentity == "" {
+		return fmt.Errorf("distribution signing identity was not imported")
+	}
+
+	profileOutput, err := run.capture(workRoot, "/usr/bin/security", "cms", "-D", "-i", profilePath)
+	if err != nil {
+		return err
+	}
+	var profile provisioningProfile
+	if _, err := plist.Unmarshal(profileOutput, &profile); err != nil {
+		return fmt.Errorf("parse provisioning profile")
+	}
+	if profile.UUID == "" || profile.Name == "" || len(profile.TeamIdentifier) != 1 || profile.TeamIdentifier[0] != credentials.teamID {
+		return fmt.Errorf("provisioning profile does not match APPLE_TEAM_ID")
+	}
+	if err := validateAppStoreProfile(profile); err != nil {
+		return err
+	}
+	if !profileAuthorizesIdentity(profile.DeveloperCertificates, signingIdentity) {
+		return fmt.Errorf("distribution certificate is not authorized by the provisioning profile")
+	}
+	bundleID, err := readBundleID(filepath.Join(appPath, "Info.plist"))
+	if err != nil {
+		return err
+	}
+	applicationID, _ := profile.Entitlements["application-identifier"].(string)
+	if !profileMatchesBundle(applicationID, credentials.teamID, bundleID) {
+		return fmt.Errorf("provisioning profile does not match the application bundle identifier")
+	}
+	installedProfile := filepath.Join(privateHome, "Library", "MobileDevice", "Provisioning Profiles", profile.UUID+".mobileprovision")
+	if err := copyPrivateFile(profilePath, installedProfile); err != nil {
+		return fmt.Errorf("install provisioning profile")
+	}
+	if err := copyPrivateFile(profilePath, filepath.Join(appPath, "embedded.mobileprovision")); err != nil {
+		return fmt.Errorf("embed provisioning profile")
+	}
+	entitlementsPath := filepath.Join(secretsDir, "entitlements.plist")
+	entitlements, err := plist.Marshal(profile.Entitlements, plist.XMLFormat)
+	if err != nil || os.WriteFile(entitlementsPath, entitlements, 0600) != nil {
+		return fmt.Errorf("prepare signing entitlements")
+	}
+	if err := signApplication(run, appPath, signingIdentity, entitlementsPath, keychainPath); err != nil {
+		return err
+	}
+
+	signedIPA := filepath.Join(workRoot, "App.ipa")
+	if err := run.run(payloadRoot, "/usr/bin/ditto", "-c", "-k", "--sequesterRsrc", "--keepParent", "Payload", signedIPA); err != nil {
+		return err
+	}
+	info, err := os.Stat(signedIPA)
+	if err != nil || !info.Mode().IsRegular() || info.Size() == 0 {
+		return fmt.Errorf("signed IPA packaging produced no output")
+	}
+	if err := run.runSensitive(workRoot, "/usr/bin/xcrun", altoolArgs("--validate-app", signedIPA, credentials)...); err != nil {
+		return fmt.Errorf("App Store Connect validation failed")
+	}
+	if err := run.runSensitive(workRoot, "/usr/bin/xcrun", altoolArgs("--upload-app", signedIPA, credentials)...); err != nil {
+		return fmt.Errorf("App Store Connect upload failed")
+	}
+	_, _ = fmt.Fprintln(privateLog, "App Store Connect accepted the signed IPA upload.")
+	return nil
+}
+
+func (e executor) runSensitive(dir, program string, args ...string) error {
+	_, _ = fmt.Fprintf(e.log, "\n$ %s [arguments redacted]\n", filepath.Base(program))
+	cmd := exec.CommandContext(e.ctx, program, args...)
+	cmd.Dir, cmd.Env, cmd.Stdout, cmd.Stderr = dir, e.env, e.log, e.log
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("%s failed: %w", filepath.Base(program), err)
+	}
+	return nil
+}
+
+func decryptFileBounded(identity age.Identity, sourcePath, destinationPath string, limit int64) error {
+	source, err := os.Open(sourcePath)
+	if err != nil {
+		return fmt.Errorf("open encrypted unsigned IPA")
+	}
+	defer source.Close()
+	reader, err := age.Decrypt(source, identity)
+	if err != nil {
+		return fmt.Errorf("decrypt unsigned IPA")
+	}
+	destination, err := os.OpenFile(destinationPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
+	if err != nil {
+		return fmt.Errorf("prepare unsigned IPA")
+	}
+	defer destination.Close()
+	written, err := io.Copy(destination, io.LimitReader(reader, limit+1))
+	if err != nil || written == 0 || written > limit {
+		_ = os.Remove(destinationPath)
+		return fmt.Errorf("invalid unsigned IPA ciphertext")
+	}
+	return nil
+}
+
+func extractUnsignedIPA(ipaPath, destinationRoot string) (string, error) {
+	reader, err := zip.OpenReader(ipaPath)
+	if err != nil {
+		return "", fmt.Errorf("open unsigned IPA")
+	}
+	defer reader.Close()
+	if len(reader.File) == 0 || len(reader.File) > maxDeployEntries {
+		return "", fmt.Errorf("invalid unsigned IPA entry count")
+	}
+	var total uint64
+	for _, entry := range reader.File {
+		rawName := entry.Name
+		name := strings.TrimSuffix(rawName, "/")
+		clean := path.Clean(name)
+		if name == "" || clean != name || strings.HasPrefix(rawName, "/") || strings.Contains(rawName, `\`) ||
+			(clean != "Payload" && !strings.HasPrefix(clean, "Payload/")) || entry.Mode()&os.ModeSymlink != 0 {
+			return "", fmt.Errorf("unsafe unsigned IPA member")
+		}
+		if entry.UncompressedSize64 > uint64(maxDeployIPABytes*2) || total > uint64(maxDeployIPABytes*2)-entry.UncompressedSize64 {
+			return "", fmt.Errorf("unsigned IPA expands beyond the allowed size")
+		}
+		total += entry.UncompressedSize64
+		destination := filepath.Join(destinationRoot, filepath.FromSlash(clean))
+		if !pathWithin(destinationRoot, destination) {
+			return "", fmt.Errorf("unsigned IPA member escapes extraction root")
+		}
+		if entry.FileInfo().IsDir() {
+			if err := os.MkdirAll(destination, 0700); err != nil {
+				return "", fmt.Errorf("extract unsigned IPA")
+			}
+			mode := entry.Mode().Perm() & 0755
+			if mode == 0 {
+				mode = 0755
+			}
+			if err := os.Chmod(destination, mode); err != nil {
+				return "", fmt.Errorf("extract unsigned IPA")
+			}
+			continue
+		}
+		if !entry.Mode().IsRegular() {
+			return "", fmt.Errorf("unsupported unsigned IPA member")
+		}
+		if err := os.MkdirAll(filepath.Dir(destination), 0700); err != nil {
+			return "", fmt.Errorf("extract unsigned IPA")
+		}
+		source, err := entry.Open()
+		if err != nil {
+			return "", fmt.Errorf("extract unsigned IPA")
+		}
+		mode := entry.Mode().Perm() & 0755
+		if mode == 0 {
+			mode = 0644
+		}
+		if entry.Mode().Perm()&0111 != 0 {
+			mode |= 0111
+		}
+		target, err := os.OpenFile(destination, os.O_WRONLY|os.O_CREATE|os.O_EXCL, mode)
+		if err != nil {
+			source.Close()
+			return "", fmt.Errorf("extract unsigned IPA")
+		}
+		_, copyErr := io.Copy(target, source)
+		closeErr := target.Close()
+		source.Close()
+		if copyErr != nil || closeErr != nil {
+			return "", fmt.Errorf("extract unsigned IPA")
+		}
+	}
+	payload := filepath.Join(destinationRoot, "Payload")
+	entries, err := os.ReadDir(payload)
+	if err != nil {
+		return "", fmt.Errorf("unsigned IPA has no Payload directory")
+	}
+	var apps []string
+	for _, entry := range entries {
+		if entry.IsDir() && strings.HasSuffix(entry.Name(), ".app") {
+			apps = append(apps, filepath.Join(payload, entry.Name()))
+		}
+	}
+	if len(apps) != 1 {
+		return "", fmt.Errorf("unsigned IPA must contain exactly one application")
+	}
+	return apps[0], nil
+}
+
+func rejectNestedApplications(appPath string) error {
+	return filepath.WalkDir(appPath, func(path string, entry os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if path == appPath {
+			return nil
+		}
+		name := strings.ToLower(entry.Name())
+		if entry.IsDir() && (strings.HasSuffix(name, ".appex") || strings.HasSuffix(name, ".app") ||
+			strings.HasSuffix(name, ".xpc") || name == "plugins" || name == "watch" ||
+			name == "appclips" || name == "xpcservices") {
+			return fmt.Errorf("embedded applications require separate provisioning profiles and are not supported")
+		}
+		return nil
+	})
+}
+
+func setBundleBuildNumber(infoPath, buildNumber string) error {
+	if !buildPattern.MatchString(buildNumber) {
+		return fmt.Errorf("invalid TestFlight build number")
+	}
+	info, err := os.Lstat(infoPath)
+	if err != nil || !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 || info.Size() > 4*1024*1024 {
+		return fmt.Errorf("inspect application Info.plist")
+	}
+	data, err := os.ReadFile(infoPath)
+	if err != nil {
+		return fmt.Errorf("read application Info.plist")
+	}
+	var values map[string]any
+	if _, err := plist.Unmarshal(data, &values); err != nil {
+		return fmt.Errorf("parse application Info.plist")
+	}
+	if values == nil {
+		return fmt.Errorf("parse application Info.plist")
+	}
+	values["CFBundleVersion"] = buildNumber
+	updated, err := plist.Marshal(values, plist.BinaryFormat)
+	if err != nil {
+		return fmt.Errorf("update application build number")
+	}
+	if err := os.WriteFile(infoPath, updated, info.Mode().Perm()); err != nil {
+		return fmt.Errorf("update application build number")
+	}
+	return nil
+}
+
+func altoolArgs(operation, ipaPath string, credentials *appleCredentials) []string {
+	args := []string{"altool", operation, "-f", ipaPath, "-t", "ios", "--apiKey", credentials.apiKeyID}
+	if credentials.issuerID != "" {
+		args = append(args, "--apiIssuer", credentials.issuerID)
+	}
+	return args
+}
+
+func signApplication(run executor, appPath, identity, entitlementsPath, keychainPath string) error {
+	var nested []string
+	err := filepath.WalkDir(appPath, func(path string, entry os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if path == appPath {
+			return nil
+		}
+		if entry.IsDir() && strings.HasSuffix(entry.Name(), ".framework") {
+			nested = append(nested, path)
+			return filepath.SkipDir
+		}
+		if !entry.IsDir() && strings.HasSuffix(entry.Name(), ".dylib") {
+			nested = append(nested, path)
+		}
+		return nil
+	})
+	if err != nil {
+		return fmt.Errorf("inspect nested code")
+	}
+	sort.Slice(nested, func(i, j int) bool {
+		return strings.Count(nested[i], string(filepath.Separator)) > strings.Count(nested[j], string(filepath.Separator))
+	})
+	for _, target := range nested {
+		if err := run.run(filepath.Dir(target), "/usr/bin/codesign", "--force", "--sign", identity, "--keychain", keychainPath, "--timestamp=none", target); err != nil {
+			return err
+		}
+	}
+	if err := run.run(filepath.Dir(appPath), "/usr/bin/codesign", "--force", "--sign", identity, "--keychain", keychainPath, "--timestamp=none", "--generate-entitlement-der", "--entitlements", entitlementsPath, appPath); err != nil {
+		return err
+	}
+	return run.run(filepath.Dir(appPath), "/usr/bin/codesign", "--verify", "--deep", "--strict", appPath)
+}
+
+func readBundleID(infoPath string) (string, error) {
+	data, err := os.ReadFile(infoPath)
+	if err != nil || len(data) > 4*1024*1024 {
+		return "", fmt.Errorf("read application Info.plist")
+	}
+	var info struct {
+		BundleID string `plist:"CFBundleIdentifier"`
+	}
+	if _, err := plist.Unmarshal(data, &info); err != nil || info.BundleID == "" || strings.ContainsAny(info.BundleID, "\r\n\x00") {
+		return "", fmt.Errorf("read application bundle identifier")
+	}
+	return info.BundleID, nil
+}
+
+func profileMatchesBundle(applicationID, teamID, bundleID string) bool {
+	prefix := teamID + "."
+	return strings.HasPrefix(applicationID, prefix) && strings.TrimPrefix(applicationID, prefix) == bundleID
+}
+
+func validateAppStoreProfile(profile provisioningProfile) error {
+	if profile.ExpirationDate.IsZero() || !profile.ExpirationDate.After(time.Now().Add(5*time.Minute)) {
+		return fmt.Errorf("provisioning profile is expired or near expiry")
+	}
+	var supportsIOS bool
+	for _, platform := range profile.Platform {
+		if platform == "iOS" {
+			supportsIOS = true
+		}
+	}
+	if !supportsIOS || len(profile.DeveloperCertificates) != 1 || len(profile.ProvisionedDevices) != 0 || profile.ProvisionsAllDevices {
+		return fmt.Errorf("provisioning profile is not an App Store iOS distribution profile")
+	}
+	if getTaskAllow, ok := profile.Entitlements["get-task-allow"]; ok && getTaskAllow != false {
+		return fmt.Errorf("provisioning profile allows debugging")
+	}
+	return nil
+}
+
+func profileAuthorizesIdentity(certificates [][]byte, identity string) bool {
+	for _, certificate := range certificates {
+		fingerprint := sha1.Sum(certificate) // #nosec G401 -- required to compare Apple's certificate fingerprint.
+		if strings.EqualFold(hex.EncodeToString(fingerprint[:]), identity) {
+			return true
+		}
+	}
+	return false
+}
+
+func writeBase64Secret(value, destination string) error {
+	if len(value) > maxSecretBytes*2 {
+		return fmt.Errorf("secret is too large")
+	}
+	data, err := base64.StdEncoding.DecodeString(strings.Map(func(r rune) rune {
+		if r == '\r' || r == '\n' || r == ' ' || r == '\t' {
+			return -1
+		}
+		return r
+	}, value))
+	if err != nil || len(data) == 0 || len(data) > maxSecretBytes {
+		return fmt.Errorf("invalid base64 secret")
+	}
+	return writePrivateFile(destination, data)
+}
+
+func writeTextOrBase64Secret(value, destination, marker string) error {
+	if strings.Contains(value, "-----BEGIN "+marker+"-----") {
+		if len(value) > maxSecretBytes {
+			return fmt.Errorf("secret is too large")
+		}
+		return writePrivateFile(destination, []byte(value+"\n"))
+	}
+	return writeBase64Secret(value, destination)
+}
+
+func writePrivateFile(destination string, data []byte) error {
+	if err := os.MkdirAll(filepath.Dir(destination), 0700); err != nil {
+		return err
+	}
+	return os.WriteFile(destination, data, 0600)
+}
+
+func copyPrivateFile(source, destination string) error {
+	data, err := os.ReadFile(source)
+	if err != nil {
+		return err
+	}
+	return writePrivateFile(destination, data)
+}
+
+func randomPassword() (string, error) {
+	data := make([]byte, 32)
+	if _, err := rand.Read(data); err != nil {
+		return "", err
+	}
+	return base64.RawURLEncoding.EncodeToString(data), nil
+}

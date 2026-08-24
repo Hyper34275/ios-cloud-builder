@@ -39,6 +39,13 @@ builder.json
 .env.local
 *.local
 
+# Credentials and signing material
+*.pem
+*.p8
+*.p12
+*.mobileprovision
+*.agekey
+
 # Temporary files
 tmp/
 temp/

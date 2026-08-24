@@ -13,10 +13,22 @@ import (
 // then removes every plaintext input even if encryption fails. The output
 // directory contains only build.log.age and, on success, App.ipa.age.
 func EncryptArtifacts(recipientText, logPath, ipaPath, outputDir string) error {
-	recipient, err := age.ParseX25519Recipient(recipientText)
+	return EncryptArtifactsWithRecipients(recipientText, recipientText, logPath, ipaPath, outputDir)
+}
+
+// EncryptArtifactsWithRecipients keeps diagnostics decryptable by the local
+// CLI while allowing a TestFlight intermediate IPA to be encrypted to a
+// distinct identity held only by the protected signing Environment.
+func EncryptArtifactsWithRecipients(logRecipientText, ipaRecipientText, logPath, ipaPath, outputDir string) error {
+	logRecipient, err := age.ParseX25519Recipient(logRecipientText)
 	if err != nil {
 		removePlaintext(logPath, ipaPath)
-		return fmt.Errorf("parse AGE recipient")
+		return fmt.Errorf("parse diagnostic AGE recipient")
+	}
+	ipaRecipient, err := age.ParseX25519Recipient(ipaRecipientText)
+	if err != nil {
+		removePlaintext(logPath, ipaPath)
+		return fmt.Errorf("parse IPA AGE recipient")
 	}
 	if err := os.MkdirAll(outputDir, 0700); err != nil {
 		removePlaintext(logPath, ipaPath)
@@ -47,13 +59,13 @@ func EncryptArtifacts(recipientText, logPath, ipaPath, outputDir string) error {
 		removePlaintext(logPath, ipaPath)
 		return fmt.Errorf("encrypted artifact directory is not empty")
 	}
-	if err := encryptAndRemove(recipient, logPath, filepath.Join(outputDir, "build.log.age"), false); err != nil {
+	if err := encryptAndRemove(logRecipient, logPath, filepath.Join(outputDir, "build.log.age"), false); err != nil {
 		removePlaintext(ipaPath)
 		return err
 	}
 	if ipaPath != "" {
 		if _, statErr := os.Stat(ipaPath); statErr == nil {
-			if err := encryptAndRemove(recipient, ipaPath, filepath.Join(outputDir, "App.ipa.age"), true); err != nil {
+			if err := encryptAndRemove(ipaRecipient, ipaPath, filepath.Join(outputDir, "App.ipa.age"), true); err != nil {
 				return err
 			}
 		} else if !os.IsNotExist(statErr) {

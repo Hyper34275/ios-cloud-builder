@@ -12,17 +12,22 @@ const (
 )
 
 type (
-	Client         = github.Client
-	Repository     = github.Repository
-	WorkflowRun    = github.WorkflowRun
-	Job            = github.Job
-	JobStep        = github.JobStep
-	Artifact       = github.Artifact
-	ActionVariable = github.ActionVariable
-	ActionSecret   = github.ActionSecret
-	PublicKey      = github.PublicKey
-	APIError       = github.APIError
-	ProgressFunc   = github.ProgressFunc
+	Client                      = github.Client
+	Repository                  = github.Repository
+	WorkflowRun                 = github.WorkflowRun
+	Job                         = github.Job
+	JobStep                     = github.JobStep
+	Artifact                    = github.Artifact
+	ActionVariable              = github.ActionVariable
+	ActionSecret                = github.ActionSecret
+	Environment                 = github.Environment
+	EnvironmentRule             = github.EnvironmentRule
+	EnvironmentReviewer         = github.EnvironmentReviewer
+	DeploymentBranchPolicy      = github.DeploymentBranchPolicy
+	DeploymentBranchPolicyEntry = github.DeploymentBranchPolicyEntry
+	PublicKey                   = github.PublicKey
+	APIError                    = github.APIError
+	ProgressFunc                = github.ProgressFunc
 )
 
 // NewClient creates a GitHub API client authenticated with token.
@@ -34,4 +39,9 @@ func NewClient(token string) *Client {
 // publicKey should be base64-encoded, as returned by Client.GetPublicKey.
 func EncryptSecret(publicKey, value string) (string, error) {
 	return github.EncryptSecret(publicKey, value)
+}
+
+// ValidateProductionEnvironment verifies reviewer and exact branch controls.
+func ValidateProductionEnvironment(environment *Environment, policies []DeploymentBranchPolicyEntry, trustedBranch string) error {
+	return github.ValidateProductionEnvironment(environment, policies, trustedBranch)
 }

@@ -29,6 +29,7 @@ func validInputs(t *testing.T) Inputs {
 		Configuration:     "Release",
 		FrameworkHint:     FrameworkAuto,
 		ArtifactRecipient: identity.Recipient().String(),
+		Operation:         "build",
 	}
 }
 
@@ -56,6 +57,7 @@ func TestInputsValidate(t *testing.T) {
 		{"configuration", func(in *Inputs) { in.Configuration = "Profile" }},
 		{"framework", func(in *Inputs) { in.FrameworkHint = "shell" }},
 		{"recipient", func(in *Inputs) { in.ArtifactRecipient = "age1invalid" }},
+		{"operation", func(in *Inputs) { in.Operation = "shell" }},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {

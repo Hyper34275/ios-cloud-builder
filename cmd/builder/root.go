@@ -558,6 +558,15 @@ var iosBuildCmd = &cobra.Command{
 	RunE:  runIOSBuild,
 }
 
+var iosDeployCmd = &cobra.Command{
+	Use:   "deploy",
+	Short: "Build, sign, and upload to TestFlight",
+	Long: `Builds the private working-tree snapshot through the central builder, then
+signs the unsigned application in the protected apple-production Environment and
+uploads it directly to App Store Connect. No signed IPA is stored by GitHub.`,
+	RunE: runIOSDeploy,
+}
+
 var iosShareCmd = &cobra.Command{
 	Use:   "share",
 	Short: "Try this build on a simulator, from the MobAI app",
@@ -631,8 +640,13 @@ func init() {
 	iosBuildCmd.Flags().StringP("output", "o", "dist", "Output directory for IPA")
 	iosBuildCmd.Flags().Duration("timeout", 30*time.Minute, "Build timeout")
 	iosBuildCmd.Flags().Bool("unsigned", false, "Build unsigned IPA (skip code signing even if configured)")
+	iosBuildCmd.Flags().Bool("testflight", false, "Sign and upload through the protected central Environment")
 	iosBuildCmd.Flags().StringP("remote", "r", "origin", "Git remote to push the working-tree snapshot to")
 	iosCmd.AddCommand(iosBuildCmd)
+	iosDeployCmd.Flags().StringP("output", "o", "dist", "Output directory for decrypted diagnostic logs")
+	iosDeployCmd.Flags().Duration("timeout", 45*time.Minute, "Deployment timeout, including Environment approval")
+	iosDeployCmd.Flags().StringP("remote", "r", "origin", "Git remote to push the working-tree snapshot to")
+	iosCmd.AddCommand(iosDeployCmd)
 
 	// iOS share command flags
 	iosShareCmd.Flags().Duration("duration", 30*time.Minute, "How long the simulator stays available while unused")
@@ -654,7 +668,14 @@ func runIOSBuild(cmd *cobra.Command, args []string) error {
 	outputDir, _ := cmd.Flags().GetString("output")
 	timeout, _ := cmd.Flags().GetDuration("timeout")
 	unsigned, _ := cmd.Flags().GetBool("unsigned")
+	testFlight, _ := cmd.Flags().GetBool("testflight")
 	remote, _ := cmd.Flags().GetString("remote")
+	if unsigned && testFlight {
+		return fmt.Errorf("--unsigned and --testflight cannot be used together")
+	}
+	if testFlight && !cfg.IsCentral() {
+		return fmt.Errorf("--testflight requires backend=central; repository builds retain their existing signing behavior")
+	}
 
 	ctx := cmd.Context()
 	if ctx == nil {
@@ -664,10 +685,39 @@ func runIOSBuild(cmd *cobra.Command, args []string) error {
 	defer stop()
 
 	return runBuild(ctx, cfg, build.BuildOptions{
-		OutputDir: outputDir,
-		Timeout:   timeout,
-		Unsigned:  unsigned,
-		Remote:    remote,
+		OutputDir:  outputDir,
+		Timeout:    timeout,
+		Unsigned:   unsigned,
+		TestFlight: testFlight,
+		Remote:     remote,
+	})
+}
+
+func runIOSDeploy(cmd *cobra.Command, _ []string) error {
+	cfg, err := loadConfig()
+	if err != nil {
+		return err
+	}
+	if err := cfg.Validate(); err != nil {
+		return fmt.Errorf("invalid configuration: %w", err)
+	}
+	if !cfg.IsCentral() {
+		return fmt.Errorf("`builder ios deploy` requires backend=central")
+	}
+	outputDir, _ := cmd.Flags().GetString("output")
+	timeout, _ := cmd.Flags().GetDuration("timeout")
+	remote, _ := cmd.Flags().GetString("remote")
+	ctx := cmd.Context()
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	ctx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	return runBuild(ctx, cfg, build.BuildOptions{
+		OutputDir:  outputDir,
+		Timeout:    timeout,
+		TestFlight: true,
+		Remote:     remote,
 	})
 }
 
@@ -729,7 +779,11 @@ func runBuild(ctx context.Context, cfg *config.Config, opts build.BuildOptions) 
 		return err
 	}
 
-	fmt.Printf("IPA: %s\n", result.IPAPath)
+	if result.TestFlight {
+		fmt.Println("TestFlight: upload accepted by App Store Connect")
+	} else {
+		fmt.Printf("IPA: %s\n", result.IPAPath)
+	}
 	fmt.Printf("Workflow: %s\n", result.WorkflowURL)
 
 	return nil

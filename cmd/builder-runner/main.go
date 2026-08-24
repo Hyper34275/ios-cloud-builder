@@ -35,9 +35,34 @@ func run(args []string) error {
 		return verifyCheckout(args[1:])
 	case "execute":
 		return execute(args[1:])
+	case "deploy-testflight":
+		return deployTestFlight(args[1:])
 	default:
 		return fmt.Errorf("unknown builder-runner subcommand")
 	}
+}
+
+func deployTestFlight(args []string) error {
+	flags := newFlags("deploy-testflight")
+	var options runner.TestFlightOptions
+	var recipient, outputDir string
+	flags.StringVar(&options.EncryptedIPAPath, "encrypted-ipa", "", "")
+	flags.StringVar(&options.LogPath, "log", "", "")
+	flags.StringVar(&options.BuildNumber, "build-number", "", "")
+	flags.StringVar(&recipient, "recipient", "", "")
+	flags.StringVar(&outputDir, "output", "", "")
+	if err := flags.Parse(args); err != nil || flags.NArg() != 0 {
+		return fmt.Errorf("invalid TestFlight deployment arguments")
+	}
+	fmt.Println("Signing and uploading iOS application; detailed output is private")
+	if err := runner.ExecuteTestFlight(context.Background(), &options, recipient, outputDir); err != nil {
+		if err == runner.ErrDeployFailed {
+			return runner.ErrDeployFailed
+		}
+		return fmt.Errorf("secure TestFlight deployment preparation failed")
+	}
+	fmt.Println("App Store Connect accepted the upload; encrypted diagnostics are ready")
+	return nil
 }
 
 func newFlags(name string) *flag.FlagSet {
@@ -58,6 +83,7 @@ func validateInputs(args []string) error {
 	flags.StringVar(&in.Configuration, "configuration", "", "")
 	flags.StringVar(&in.FrameworkHint, "framework-hint", "", "")
 	flags.StringVar(&in.ArtifactRecipient, "artifact-recipient", "", "")
+	flags.StringVar(&in.Operation, "operation", "", "")
 	if err := flags.Parse(args); err != nil || flags.NArg() != 0 {
 		return fmt.Errorf("invalid validation arguments")
 	}
@@ -113,7 +139,7 @@ func verifyCheckout(args []string) error {
 func execute(args []string) error {
 	flags := newFlags("execute")
 	var options runner.BuildOptions
-	var recipient, outputDir string
+	var recipient, ipaRecipient, outputDir string
 	flags.StringVar(&options.SourceRoot, "source", "", "")
 	flags.StringVar(&options.IOSPath, "ios-path", "", "")
 	flags.StringVar(&options.Scheme, "scheme", "", "")
@@ -122,12 +148,16 @@ func execute(args []string) error {
 	flags.StringVar(&options.LogPath, "log", "", "")
 	flags.StringVar(&options.IPAPath, "ipa", "", "")
 	flags.StringVar(&recipient, "recipient", "", "")
+	flags.StringVar(&ipaRecipient, "ipa-recipient", "", "")
 	flags.StringVar(&outputDir, "output", "", "")
 	if err := flags.Parse(args); err != nil || flags.NArg() != 0 {
 		return fmt.Errorf("invalid secure execution arguments")
 	}
+	if ipaRecipient == "" {
+		ipaRecipient = recipient
+	}
 	fmt.Println("Building iOS application; detailed output is private")
-	if err := runner.ExecuteSecure(context.Background(), &options, recipient, outputDir); err != nil {
+	if err := runner.ExecuteSecureWithIPARecipient(context.Background(), &options, recipient, ipaRecipient, outputDir); err != nil {
 		if err == runner.ErrBuildFailed {
 			return runner.ErrBuildFailed
 		}

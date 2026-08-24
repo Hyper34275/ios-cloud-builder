@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/MobAI-App/ios-builder/internal/workflow"
+	"go.yaml.in/yaml/v3"
 )
 
 func TestPublicWorkflowsDisableSetupGoCaches(t *testing.T) {
@@ -69,6 +70,10 @@ func TestCentralWorkflowSecurityProperties(t *testing.T) {
 	if !bytes.Equal(rootWorkflow, template) {
 		t.Fatal("root central workflow and embedded template differ")
 	}
+	var parsed any
+	if err := yaml.Unmarshal(rootWorkflow, &parsed); err != nil {
+		t.Fatalf("central workflow is not valid YAML: %v", err)
+	}
 	// Git for Windows commonly checks text files out with CRLF. Normalize only
 	// for semantic assertions; byte identity above still protects the embedded
 	// workflow from drifting from the repository copy.
@@ -85,9 +90,26 @@ func TestCentralWorkflowSecurityProperties(t *testing.T) {
 		"CODE_SIGNING_ALLOWED: 'NO'", "retention-days: 1",
 		"name: ios-builder-${{ inputs.build_id }}", "encrypted/build.log.age", "encrypted/App.ipa.age",
 		"go mod verify",
+		"operation:", "environment: apple-production", "APPLE_SIGNING_RECIPIENT",
+		"APPLE_SIGNING_AGE_IDENTITY", "APPLE_DISTRIBUTION_P12", "APPLE_PROVISIONING_PROFILE",
+		"ASC_API_KEY_P8", "deploy-testflight", "--build-number", "github.run_number", "github.run_attempt", "ios-builder-deploy-${{ inputs.build_id }}",
 	} {
 		if !strings.Contains(text, required) {
 			t.Errorf("central workflow missing %q", required)
+		}
+	}
+	deployMarker := "  sign-and-deploy:"
+	deployIndex := strings.Index(text, deployMarker)
+	if deployIndex < 0 {
+		t.Fatal("central workflow has no protected deployment job")
+	}
+	deployJob := text[deployIndex:]
+	for _, forbidden := range []string{
+		"path: source", "APP_PRIVATE_KEY", "source-token", "source_owner", "source_repo",
+		"App.ipa\n", "App.ipa.age\n          retention-days",
+	} {
+		if strings.Contains(deployJob, forbidden) {
+			t.Errorf("protected deployment job contains forbidden text %q", forbidden)
 		}
 	}
 	for _, forbidden := range []string{

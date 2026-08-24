@@ -47,6 +47,48 @@ type ActionSecret struct {
 	UpdatedAt time.Time `json:"updated_at"`
 }
 
+// Environment is deployment-environment metadata used by doctor to verify the
+// minimum reviewer and branch protections without accessing secret values.
+type Environment struct {
+	ID                     int64                   `json:"id"`
+	Name                   string                  `json:"name"`
+	ProtectionRules        []EnvironmentRule       `json:"protection_rules"`
+	DeploymentBranchPolicy *DeploymentBranchPolicy `json:"deployment_branch_policy"`
+}
+
+// EnvironmentRule describes one GitHub deployment protection rule.
+type EnvironmentRule struct {
+	Type              string                `json:"type"`
+	PreventSelfReview bool                  `json:"prevent_self_review"`
+	Reviewers         []EnvironmentReviewer `json:"reviewers"`
+}
+
+// EnvironmentReviewer is a required deployment reviewer. The reviewer object
+// itself is intentionally omitted because doctor needs only rule cardinality.
+type EnvironmentReviewer struct {
+	Type string `json:"type"`
+}
+
+// DeploymentBranchPolicy describes whether an Environment accepts protected
+// branches or an explicit custom allowlist.
+type DeploymentBranchPolicy struct {
+	ProtectedBranches    bool `json:"protected_branches"`
+	CustomBranchPolicies bool `json:"custom_branch_policies"`
+}
+
+// DeploymentBranchPolicyEntry is one custom branch or tag allowlist pattern.
+type DeploymentBranchPolicyEntry struct {
+	ID   int64  `json:"id"`
+	Name string `json:"name"`
+	Type string `json:"type"`
+}
+
+// DeploymentBranchPoliciesResponse is returned by GitHub's branch-policy list endpoint.
+type DeploymentBranchPoliciesResponse struct {
+	TotalCount     int                           `json:"total_count"`
+	BranchPolicies []DeploymentBranchPolicyEntry `json:"branch_policies"`
+}
+
 // WorkflowRunsResponse is the response from listing workflow runs
 type WorkflowRunsResponse struct {
 	TotalCount   int           `json:"total_count"`

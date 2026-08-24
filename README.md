@@ -1,6 +1,6 @@
 # iOS Cloud Builder
 
-Build unsigned iOS applications from Linux, WSL, or Windows using a narrowly scoped remote macOS build. This is a truthful open-source remote-build/orchestration project derived from [MobAI-App/ios-builder](https://github.com/MobAI-App/ios-builder), not a generic compute service or a disguised workload.
+Build unsigned iOS applications, or deploy signed releases to TestFlight, from Linux, WSL, or Windows using a narrowly scoped remote macOS build. This is a truthful open-source remote-build/orchestration project derived from [MobAI-App/ios-builder](https://github.com/MobAI-App/ios-builder), not a generic compute service or a disguised workload.
 
 The central backend lets multiple private application repositories use one public builder repository without committing private source or publishing plaintext output:
 
@@ -14,6 +14,12 @@ private app working tree
   -> local download, decryption, IPA validation, and cleanup
 ```
 
+The optional TestFlight path adds a second, protected job. The build job encrypts
+the unsigned IPA to a transport recipient. After approval of the
+`apple-production` Environment, the signing job receives only that authenticated
+ciphertext—not the private checkout—then signs and uploads directly to App Store
+Connect. GitHub stores no signed IPA artifact.
+
 The original repository backend remains available for existing MobAI users and repository-local builds. Simulator sharing, MobAI integration, Flutter/React Native/KMP development commands, framework detection, working-tree snapshots, signing tools, and public Go wrappers are retained. See [the upstream relationship](docs/UPSTREAM.md).
 
 > [!IMPORTANT]
@@ -24,9 +30,10 @@ The original repository backend remains available for existing MobAI users and r
 - Private source is pushed only to the private source repository, under a temporary non-branch ref.
 - The GitHub App has Metadata read and Contents read only and is installed on explicitly selected repositories.
 - Each job requests an installation token for exactly one source repository, checks out with `persist-credentials: false`, then revokes the token before project code runs.
-- Central v1 is unsigned-only and accepts no signing material or Apple credentials.
+- Unsigned build remains the default; Apple credentials are available only to the manually protected `apple-production` job.
+- The signing job never checks out private source and never runs project scripts or dependencies.
 - Detailed dependency/compiler output is redirected to a private log from process start.
-- IPA and build log are encrypted with a local-only AGE X25519 identity before upload.
+- Build logs and locally downloaded IPAs are encrypted to the caller's local-only AGE identity. TestFlight intermediates use a distinct AGE identity held by the protected Environment.
 - The public artifact contains only `App.ipa.age` and `build.log.age`, is retained for one day, and is deleted early when local retrieval succeeds.
 - Central mode creates no Actions caches and uploads no DerivedData, dSYM, archive, source, or plaintext diagnostics.
 - Inputs are validated before credential creation; build commands use fixed argv arrays, never `eval` or user-provided scripts.
@@ -43,7 +50,7 @@ Local workstation (Linux/WSL/macOS; Windows through PowerShell/WSL):
 - A Git remote using an explicit `github.com` HTTPS or SSH URL
 - Builder CLI
 
-The public builder workflow uses the stable `macos-15` runner image. No local Mac, Xcode, certificate, or provisioning profile is required for an unsigned central build.
+The public builder workflow uses the stable `macos-15` runner image. No local Mac, Xcode, certificate, or provisioning profile is required for an unsigned central build. TestFlight deployment requires an Apple Distribution certificate, App Store distribution provisioning profile, and App Store Connect API key.
 
 ## Install the CLI
 
@@ -104,6 +111,59 @@ Repository secret    APP_PRIVATE_KEY = complete generated PEM private key
 Install the App using **Only select repositories** and choose only private applications this builder may read. Do not grant Actions, Issues, Pull requests, Administration, or write permissions. Delete the downloaded PEM after the repository secret is verified, or retain a recovery copy only in an appropriate secrets manager. Never commit it.
 
 Protect the builder's default branch, require review for CODEOWNERS paths, keep administrators minimal, and leave the default workflow token permission at read-only.
+
+## Optional protected TestFlight setup
+
+Create a GitHub Environment named `apple-production` in the **public builder**.
+Require a reviewer, restrict deployment to the protected default branch, and do
+not allow unreviewed workflow changes. For a single-operator repository, leave
+**Prevent self-review** disabled so the operator who dispatched the build can
+approve it. Environment approval is the point at which Apple credentials become
+available to the signing job.
+
+Generate a dedicated AGE identity for transport between the two jobs. Put its
+public recipient in the repository variable `APPLE_SIGNING_RECIPIENT`; put the
+identity itself only in the Environment secret `APPLE_SIGNING_AGE_IDENTITY`.
+Never reuse the caller's local AGE identity and never commit the transport
+identity. For example, on a trusted workstation with `age-keygen` installed:
+
+```bash
+umask 077
+age-keygen -o /tmp/apple-signing.agekey
+age-keygen -y /tmp/apple-signing.agekey
+```
+
+Copy the printed `age1...` recipient into the repository variable. Copy the
+complete `AGE-SECRET-KEY-...` line into the Environment secret, then securely
+remove the temporary file.
+
+Configure these values in `apple-production`:
+
+| Kind | Name | Format |
+|---|---|---|
+| Environment variable | `APPLE_TEAM_ID` | 10-character Apple Team ID |
+| Environment secret | `APPLE_SIGNING_AGE_IDENTITY` | dedicated AGE identity |
+| Environment secret | `APPLE_DISTRIBUTION_P12` | base64-encoded `.p12` |
+| Environment secret | `APPLE_DISTRIBUTION_P12_PASSWORD` | `.p12` password |
+| Environment secret | `APPLE_PROVISIONING_PROFILE` | base64-encoded App Store `.mobileprovision` |
+| Environment secret | `ASC_API_KEY_P8` | complete `.p8` PEM or its base64 encoding |
+| Environment secret | `ASC_KEY_ID` | App Store Connect API key ID |
+| Environment secret | `ASC_ISSUER_ID` | App Store Connect issuer UUID for a Team key; omit for an Individual key |
+
+Prefer an Individual App Store Connect key belonging to a dedicated Developer
+user whose app access is restricted to the applications this builder may upload.
+Individual keys do not use an issuer ID and cannot call Apple's provisioning
+endpoints; that is compatible with this manual-profile signing path. If a Team
+key is used instead, it applies across all apps and `ASC_ISSUER_ID` is required.
+Revoke and replace any certificate, API key, or GitHub App key that was ever
+committed, pasted into a public log, or otherwise exposed; moving an exposed
+credential into a secret does not make the old credential safe.
+
+Verify metadata without reading secret values:
+
+```bash
+builder central doctor --testflight
+```
 
 ## Add a private application
 
@@ -169,6 +229,22 @@ builder cleanup --older-than 48h
 
 Snapshot creation respects `.gitignore`. An untracked secret that is not ignored will be included in the temporary private snapshot, so review ignore rules before building.
 
+To create a Release build and upload it to TestFlight:
+
+```bash
+builder ios deploy
+# equivalent:
+builder ios build --testflight
+```
+
+The command may wait for approval of `apple-production`. On success, App Store
+Connect has accepted the upload for processing; TestFlight processing itself is
+asynchronous. No signed IPA is downloaded or retained as a GitHub artifact.
+The protected job replaces only `CFBundleVersion` with the unique GitHub Actions
+`run_number.run_attempt` value before signing; the application's
+`CFBundleShortVersionString` is preserved. It validates the signed IPA with App
+Store Connect before uploading it.
+
 ## Supported projects
 
 - Native Swift/Objective-C iOS projects and workspaces
@@ -178,7 +254,7 @@ Snapshot creation respects `.gitignore`. An untracked secret that is not ignored
 - Cordova/Ionic generated iOS projects
 - XcodeGen manifests
 
-Schemes and workspaces/projects are detected where possible. Central builds always pass `CODE_SIGNING_ALLOWED=NO` and package the device `.app` as an unsigned IPA. Central v1 does not upload certificates or provisioning profiles.
+Schemes and workspaces/projects are detected where possible. The source build always passes `CODE_SIGNING_ALLOWED=NO` and packages the device `.app` as an unsigned IPA. In TestFlight mode, the separate protected job manually signs that app with one App Store provisioning profile. Apps containing extensions, Watch apps, XPC services, or other embedded applications require additional profiles and are rejected rather than partially signed.
 
 ## Repository backend and retained commands
 
@@ -198,7 +274,7 @@ builder mobai ping
 builder update
 ```
 
-`builder ios share` and `builder signing setup` are intentionally repository-backend features. Central v1 installs no private-repository workflow and stores no Apple signing secrets.
+`builder ios share` and `builder signing setup` remain repository-backend features. Central TestFlight credentials are configured only in the public builder's protected Environment; the CLI never downloads them.
 
 ## Doctor checks
 
@@ -212,6 +288,12 @@ builder update
 - matching local AGE identity
 - explicit GitHub source remote
 - dry-run permission to push the temporary snapshot namespace
+
+With `--testflight`, doctor additionally verifies metadata for
+`APPLE_SIGNING_RECIPIENT`, the `apple-production` Environment, `APPLE_TEAM_ID`,
+every required Environment secret, a non-empty required-reviewer rule with
+self-review allowed, and an exact custom branch allowlist containing only the
+builder's default branch. It cannot verify secret values.
 
 ## Updating and contributing
 
@@ -231,7 +313,8 @@ go build ./cmd/builder-runner
 - Repository/source names and workflow inputs are public metadata even though source contents and outputs are encrypted.
 - A malicious project or dependency runs as the runner user and is not strongly sandboxed.
 - The central hosted-runner design has the policy caveat described in [COMPLIANCE.md](COMPLIANCE.md).
-- Central v1 produces unsigned IPAs only.
+- Central TestFlight manual signing currently supports a single application provisioning profile and rejects embedded app extensions.
+- A successful upload means App Store Connect accepted the binary; it does not mean Apple's asynchronous processing or review has completed.
 - Private GitHub SSH aliases are rejected in central mode because the CLI cannot prove an alias resolves to GitHub; use an explicit `git@github.com:OWNER/REPO.git` or `https://github.com/OWNER/REPO.git` remote.
 - Failed artifact deletion is non-fatal; ciphertext expires after one day.
 

@@ -2,7 +2,7 @@
 
 ## Security goals
 
-Central mode is designed so a public repository never commits private application source, uploads a plaintext private IPA or detailed build log, stores a decryption identity, stores Apple signing material, or keeps a persistent private-repository credential. The local CLI pushes the working tree only to a temporary ref in the private source repository. A repository-scoped GitHub App installation token performs the private checkout. Only AGE ciphertext is uploaded.
+Central mode is designed so a public repository never commits private application source, uploads a plaintext private IPA or detailed build log, or keeps a persistent private-repository credential in code. The local CLI pushes the working tree only to a temporary ref in the private source repository. A repository-scoped GitHub App installation token performs the private checkout. Only AGE ciphertext is uploaded. Optional Apple signing material and a dedicated transport AGE identity exist only as secrets of the protected `apple-production` Environment.
 
 ## Trust boundaries
 
@@ -12,6 +12,7 @@ Central mode is designed so a public repository never commits private applicatio
 - Public Actions logs, artifacts, caches, inputs, summaries, annotations, and public pull requests are untrusted/public territory.
 - Maintainers with write/admin access to the public builder are highly trusted. They can modify the workflow or helper and can dispatch builds. Keep this group minimal.
 - Private application build scripts and dependencies execute arbitrary code on the runner. Environment scrubbing prevents accidental access to known Actions channels and tokens, but is not a sandbox and cannot prevent all network exfiltration by a malicious project.
+- The TestFlight signing job trusts the approved public-builder revision, GitHub Environment controls, GitHub Actions control plane, Apple signing material, and the authenticated unsigned IPA produced by the first job. It never checks out or executes private project source.
 
 ## Threats and mitigations
 
@@ -22,6 +23,8 @@ The private-source workflow is `workflow_dispatch` only. PR CI has read-only per
 ### Workflow modification or hostile maintainer
 
 An authorized writer could change the trusted helper, select a private repository installed for the App, or substitute their own AGE recipient. Protect `main`, require review for `.github/workflows/ios-build.yml`, `internal/runner`, `internal/security`, and central coordination code, and audit dispatches. Repository administrators remain trusted because they can bypass repository controls.
+
+For TestFlight, also require approval on `apple-production` and restrict it to the protected default branch. Approval must be based on the exact workflow revision being run. Environment protection cannot defend against a repository administrator who can change or bypass those rules.
 
 ### Stolen GitHub App private key
 
@@ -40,6 +43,26 @@ The trusted Go helper validates UUID, owner, repository, exact snapshot ref, rel
 Compiler/dependency output starts redirected into a private build log. Both IPA and log are AGE-encrypted before upload, plaintext files are deleted, and the artifact step uses an exact ciphertext allowlist with one-day retention. The CLI binds the artifact to the exact run/build UUID, decrypts locally, validates IPA structure, and attempts remote artifact deletion. Central mode uses no Actions cache and never uploads DerivedData, dSYMs, archives, source, or plaintext diagnostics.
 
 AGE protects artifact confidentiality and integrity after encryption. It does not hide plaintext from the active runner or make output authentic against malicious authorized workflow code.
+
+In TestFlight mode the unsigned IPA is encrypted to a separate transport
+recipient whose identity is available only inside `apple-production`. The
+protected job downloads that ciphertext, rejects traversal, symlinks, special
+files, multiple apps, and embedded applications requiring extra profiles. It
+sets a GitHub-run-derived `CFBundleVersion`, signs without executing the app,
+validates the signed IPA with App Store Connect, and uploads it directly to Apple
+before deleting it with the ephemeral runner; only an AGE-encrypted diagnostic log is
+uploaded to GitHub.
+
+### Apple credential compromise
+
+The distribution certificate, its password, provisioning profile, App Store
+Connect key, and transport AGE identity are Environment secrets. Secret values
+are removed from the trusted runner's environment before child processes start,
+sensitive command arguments are not written to diagnostics, and credential
+files/keychains live only under runner-temporary paths. Required-reviewer and
+branch restrictions are mandatory operational controls. Revoke Apple or AGE
+credentials immediately after suspected disclosure; encryption at rest does not
+repair a previously exposed credential.
 
 ### Concurrent build confusion
 
@@ -61,5 +84,6 @@ Public workflow metadata/inputs can expose source owner/repository names, iOS pa
 
 - Protecting source from GitHub's runner/control plane.
 - Safely building intentionally malicious private projects in a strong sandbox.
-- Code signing in central v1.
+- Automatic provisioning and multi-profile signing for extensions, Watch apps, or XPC services.
+- Hiding Apple credentials from GitHub's protected signing runner/control plane.
 - Guaranteeing GitHub policy approval; see [COMPLIANCE.md](../COMPLIANCE.md).

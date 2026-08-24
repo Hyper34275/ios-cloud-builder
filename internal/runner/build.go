@@ -30,6 +30,12 @@ type BuildOptions struct {
 // executes and while its outputs are encrypted. A project script therefore
 // cannot replace the helper between the build and encryption steps.
 func ExecuteSecure(ctx context.Context, options *BuildOptions, recipient, encryptedDir string) error {
+	return ExecuteSecureWithIPARecipient(ctx, options, recipient, recipient, encryptedDir)
+}
+
+// ExecuteSecureWithIPARecipient encrypts the build log for the local caller
+// and the unsigned IPA for either that caller or the protected signing job.
+func ExecuteSecureWithIPARecipient(ctx context.Context, options *BuildOptions, logRecipient, ipaRecipient, encryptedDir string) error {
 	if err := options.validate(); err != nil {
 		return err
 	}
@@ -43,7 +49,7 @@ func ExecuteSecure(ctx context.Context, options *BuildOptions, recipient, encryp
 		message := []byte("The iOS build could not start. No public diagnostic details were emitted.\n")
 		_ = os.WriteFile(options.LogPath, message, 0600)
 	}
-	if err := EncryptArtifacts(recipient, options.LogPath, options.IPAPath, encryptedDir); err != nil {
+	if err := EncryptArtifactsWithRecipients(logRecipient, ipaRecipient, options.LogPath, options.IPAPath, encryptedDir); err != nil {
 		return fmt.Errorf("encrypt private build artifacts")
 	}
 	if buildErr != nil {

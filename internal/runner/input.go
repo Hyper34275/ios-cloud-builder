@@ -40,6 +40,7 @@ type Inputs struct {
 	Configuration     string
 	FrameworkHint     string
 	ArtifactRecipient string
+	Operation         string
 }
 
 // Validate rejects values that could widen repository access, escape the
@@ -73,6 +74,9 @@ func (in *Inputs) Validate() error {
 	recipient, err := age.ParseX25519Recipient(in.ArtifactRecipient)
 	if err != nil || recipient.String() != in.ArtifactRecipient {
 		return fmt.Errorf("invalid artifact_recipient")
+	}
+	if in.Operation != "build" && in.Operation != "testflight" {
+		return fmt.Errorf("invalid operation")
 	}
 	return nil
 }

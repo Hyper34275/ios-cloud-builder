@@ -2,6 +2,7 @@ package github
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 )
@@ -75,4 +76,73 @@ func (c *Client) GetActionSecret(ctx context.Context, owner, repo, name string) 
 		return nil, err
 	}
 	return &secret, nil
+}
+
+// GetEnvironment verifies that a protected deployment environment exists.
+func (c *Client) GetEnvironment(ctx context.Context, owner, repo, name string) (*Environment, error) {
+	var environment Environment
+	if err := c.do(ctx, fmt.Sprintf("/repos/%s/%s/environments/%s", owner, repo, name), &environment); err != nil {
+		return nil, err
+	}
+	return &environment, nil
+}
+
+// GetDeploymentBranchPolicies returns the custom branch allowlist for an Environment.
+func (c *Client) GetDeploymentBranchPolicies(ctx context.Context, owner, repo, environment string) ([]DeploymentBranchPolicyEntry, error) {
+	var response DeploymentBranchPoliciesResponse
+	path := fmt.Sprintf("/repos/%s/%s/environments/%s/deployment-branch-policies?per_page=100", owner, repo, environment)
+	if err := c.do(ctx, path, &response); err != nil {
+		return nil, err
+	}
+	return response.BranchPolicies, nil
+}
+
+// ValidateProductionEnvironment fails closed unless deployment needs a real
+// reviewer, allows self-review, and is restricted to exactly the trusted branch.
+func ValidateProductionEnvironment(environment *Environment, policies []DeploymentBranchPolicyEntry, trustedBranch string) error {
+	if environment == nil || environment.Name == "" {
+		return errors.New("deployment Environment metadata is missing")
+	}
+	var reviewersConfigured bool
+	for _, rule := range environment.ProtectionRules {
+		if rule.Type != "required_reviewers" {
+			continue
+		}
+		if rule.PreventSelfReview {
+			return errors.New("Prevent self-review must be disabled for the single-operator workflow")
+		}
+		if len(rule.Reviewers) == 0 {
+			return errors.New("required reviewer rule has no reviewers")
+		}
+		reviewersConfigured = true
+	}
+	if !reviewersConfigured {
+		return errors.New("required reviewer protection is not configured")
+	}
+	branchPolicy := environment.DeploymentBranchPolicy
+	if branchPolicy == nil || branchPolicy.ProtectedBranches || !branchPolicy.CustomBranchPolicies {
+		return errors.New("deployment must use a custom branch allowlist")
+	}
+	if len(policies) != 1 || policies[0].Name != trustedBranch || (policies[0].Type != "" && policies[0].Type != "branch") {
+		return fmt.Errorf("deployment branch allowlist must contain only branch %q", trustedBranch)
+	}
+	return nil
+}
+
+// GetEnvironmentActionSecret returns environment-secret metadata only.
+func (c *Client) GetEnvironmentActionSecret(ctx context.Context, owner, repo, environment, name string) (*ActionSecret, error) {
+	var secret ActionSecret
+	if err := c.do(ctx, fmt.Sprintf("/repos/%s/%s/environments/%s/secrets/%s", owner, repo, environment, name), &secret); err != nil {
+		return nil, err
+	}
+	return &secret, nil
+}
+
+// GetEnvironmentActionVariable returns environment-variable metadata.
+func (c *Client) GetEnvironmentActionVariable(ctx context.Context, owner, repo, environment, name string) (*ActionVariable, error) {
+	var variable ActionVariable
+	if err := c.do(ctx, fmt.Sprintf("/repos/%s/%s/environments/%s/variables/%s", owner, repo, environment, name), &variable); err != nil {
+		return nil, err
+	}
+	return &variable, nil
 }

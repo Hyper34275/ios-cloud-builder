@@ -148,6 +148,92 @@ func TestDeleteArtifact(t *testing.T) {
 	}
 }
 
+func TestEnvironmentMetadataEndpoints(t *testing.T) {
+	seen := map[string]bool{}
+	client, closeServer := workflowTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		seen[r.URL.Path] = true
+		switch r.URL.Path {
+		case "/repos/o/r/environments/apple-production":
+			_ = json.NewEncoder(w).Encode(Environment{ID: 1, Name: "apple-production"})
+		case "/repos/o/r/environments/apple-production/deployment-branch-policies":
+			if r.URL.Query().Get("per_page") != "100" {
+				t.Fatalf("per_page = %q", r.URL.Query().Get("per_page"))
+			}
+			_ = json.NewEncoder(w).Encode(DeploymentBranchPoliciesResponse{
+				TotalCount:     1,
+				BranchPolicies: []DeploymentBranchPolicyEntry{{ID: 2, Name: "main", Type: "branch"}},
+			})
+		case "/repos/o/r/environments/apple-production/secrets/ASC_KEY_ID":
+			_ = json.NewEncoder(w).Encode(ActionSecret{Name: "ASC_KEY_ID"})
+		case "/repos/o/r/environments/apple-production/variables/APPLE_TEAM_ID":
+			_ = json.NewEncoder(w).Encode(ActionVariable{Name: "APPLE_TEAM_ID"})
+		default:
+			t.Fatalf("unexpected path %q", r.URL.Path)
+		}
+	})
+	defer closeServer()
+	if _, err := client.GetEnvironment(context.Background(), "o", "r", "apple-production"); err != nil {
+		t.Fatal(err)
+	}
+	if policies, err := client.GetDeploymentBranchPolicies(context.Background(), "o", "r", "apple-production"); err != nil || len(policies) != 1 {
+		t.Fatalf("GetDeploymentBranchPolicies() = %#v, %v", policies, err)
+	}
+	if _, err := client.GetEnvironmentActionSecret(context.Background(), "o", "r", "apple-production", "ASC_KEY_ID"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.GetEnvironmentActionVariable(context.Background(), "o", "r", "apple-production", "APPLE_TEAM_ID"); err != nil {
+		t.Fatal(err)
+	}
+	if len(seen) != 4 {
+		t.Fatalf("seen paths = %#v", seen)
+	}
+}
+
+func TestValidateProductionEnvironment(t *testing.T) {
+	valid := &Environment{
+		Name: "apple-production",
+		ProtectionRules: []EnvironmentRule{{
+			Type:      "required_reviewers",
+			Reviewers: []EnvironmentReviewer{{Type: "User"}},
+		}},
+		DeploymentBranchPolicy: &DeploymentBranchPolicy{CustomBranchPolicies: true},
+	}
+	policies := []DeploymentBranchPolicyEntry{{Name: "main", Type: "branch"}}
+	if err := ValidateProductionEnvironment(valid, policies, "main"); err != nil {
+		t.Fatalf("valid Environment rejected: %v", err)
+	}
+
+	tests := []struct {
+		name     string
+		mutate   func(*Environment)
+		policies []DeploymentBranchPolicyEntry
+	}{
+		{name: "missing reviewers", mutate: func(environment *Environment) { environment.ProtectionRules = nil }},
+		{name: "self review blocked", mutate: func(environment *Environment) { environment.ProtectionRules[0].PreventSelfReview = true }},
+		{name: "protected branches instead of exact branch", mutate: func(environment *Environment) {
+			environment.DeploymentBranchPolicy = &DeploymentBranchPolicy{ProtectedBranches: true}
+		}},
+		{name: "additional branch", policies: []DeploymentBranchPolicyEntry{{Name: "main", Type: "branch"}, {Name: "release", Type: "branch"}}},
+		{name: "tag masquerading as main", policies: []DeploymentBranchPolicyEntry{{Name: "main", Type: "tag"}}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			copyEnvironment := *valid
+			copyEnvironment.ProtectionRules = append([]EnvironmentRule(nil), valid.ProtectionRules...)
+			if test.mutate != nil {
+				test.mutate(&copyEnvironment)
+			}
+			gotPolicies := policies
+			if test.policies != nil {
+				gotPolicies = test.policies
+			}
+			if err := ValidateProductionEnvironment(&copyEnvironment, gotPolicies, "main"); err == nil {
+				t.Fatal("unsafe Environment was accepted")
+			}
+		})
+	}
+}
+
 func TestTriggerWorkflowDispatchPayload(t *testing.T) {
 	wantInputs := map[string]string{"build_id": "id", "source_repo": "private"}
 	var got WorkflowDispatchRequest

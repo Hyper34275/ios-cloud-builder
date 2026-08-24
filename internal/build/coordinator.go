@@ -93,10 +93,11 @@ func selectExecutionBackend(coordinator *Coordinator) Backend {
 
 // BuildOptions contains options for a build
 type BuildOptions struct {
-	OutputDir string
-	Timeout   time.Duration
-	Unsigned  bool   // Skip code signing even if configured
-	Remote    string // Git remote to push the working-tree snapshot to
+	OutputDir  string
+	Timeout    time.Duration
+	Unsigned   bool   // Skip code signing even if configured
+	TestFlight bool   // Sign and upload through the protected central environment
+	Remote     string // Git remote to push the working-tree snapshot to
 }
 
 // BuildResult contains the result of a build
@@ -107,6 +108,7 @@ type BuildResult struct {
 	Duration    time.Duration
 	WorkflowURL string
 	IPASize     int64
+	TestFlight  bool
 }
 
 // Build triggers a remote build and downloads the IPA artifact

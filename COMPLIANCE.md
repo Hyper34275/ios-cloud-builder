@@ -2,7 +2,7 @@
 
 Last checked: 2026-08-24.
 
-This repository is an open-source iOS remote-build and orchestration project derived from [MobAI-App/ios-builder](https://github.com/MobAI-App/ios-builder). Its central backend accepts an authorized private application's temporary Git ref as build input, runs the project's iOS build, and returns only AGE-encrypted artifacts.
+This repository is an open-source iOS remote-build and orchestration project derived from [MobAI-App/ios-builder](https://github.com/MobAI-App/ios-builder). Its central backend accepts an authorized private application's temporary Git ref as build input, runs the project's iOS build, and returns only AGE-encrypted artifacts. Its optional protected deployment job signs an authenticated unsigned intermediate and uploads it directly to App Store Connect without retaining a signed artifact.
 
 ## GitHub-hosted runner caveat
 
@@ -16,6 +16,7 @@ This project must not be presented as a billing bypass, disguised workload, gene
 
 - Use only repositories and source code you are authorized to access and build.
 - Do not expose the central secret-bearing workflow to pull-request, issue-comment, `workflow_run`, or `pull_request_target` triggers.
+- Keep TestFlight credentials in the protected `apple-production` Environment, require reviewer approval, and restrict deployments to the protected default branch.
 - Do not add generic command/script inputs.
 - Respect GitHub's Acceptable Use Policies, Actions service limits, billing rules, and any account-specific agreement.
 - Recheck the linked terms before material deployment changes and after GitHub announces policy changes.

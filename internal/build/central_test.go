@@ -35,8 +35,9 @@ func TestCentralDispatchInputs(t *testing.T) {
 		"configuration":      "Release",
 		"framework_hint":     "flutter",
 		"artifact_recipient": "age1example",
+		"operation":          "build",
 	}
-	if got := centralDispatchInputs(cfg, want["build_id"], want["snapshot_ref"]); !reflect.DeepEqual(got, want) {
+	if got := centralDispatchInputs(cfg, want["build_id"], want["snapshot_ref"], false); !reflect.DeepEqual(got, want) {
 		t.Fatalf("centralDispatchInputs() = %#v, want %#v", got, want)
 	}
 }
@@ -112,7 +113,7 @@ func TestDecryptBoundedRejectsOversizePlaintext(t *testing.T) {
 
 func TestCentralDispatchInputsUsesRepositoryRootForEmptyIOSPath(t *testing.T) {
 	cfg := &config.Config{GitHub: config.GitHubConfig{Owner: "o", Repo: "r"}}
-	if got := centralDispatchInputs(cfg, "id", "ref")["ios_path"]; got != "." {
+	if got := centralDispatchInputs(cfg, "id", "ref", false)["ios_path"]; got != "." {
 		t.Fatalf("ios_path = %q, want .", got)
 	}
 }
@@ -126,8 +127,8 @@ func TestCentralDispatchInputsKeepRepositoriesIndependent(t *testing.T) {
 		GitHub:   config.GitHubConfig{Owner: "team-b", Repo: "private-b"},
 		Security: config.SecurityConfig{Recipient: "age1recipient-b"},
 	}
-	a := centralDispatchInputs(first, "550e8400-e29b-41d4-a716-446655440000", "refs/ios-builder/jobs/a")
-	b := centralDispatchInputs(second, "6ba7b810-9dad-41d1-80b4-00c04fd430c8", "refs/ios-builder/jobs/b")
+	a := centralDispatchInputs(first, "550e8400-e29b-41d4-a716-446655440000", "refs/ios-builder/jobs/a", false)
+	b := centralDispatchInputs(second, "6ba7b810-9dad-41d1-80b4-00c04fd430c8", "refs/ios-builder/jobs/b", false)
 	if a["source_owner"] == b["source_owner"] || a["source_repo"] == b["source_repo"] || a["build_id"] == b["build_id"] {
 		t.Fatalf("central dispatches were not isolated: %#v %#v", a, b)
 	}
@@ -137,6 +138,18 @@ func TestCentralDispatchInputsKeepRepositoriesIndependent(t *testing.T) {
 				t.Fatalf("local or runner credential leaked into dispatch payload key %q", key)
 			}
 		}
+	}
+}
+
+func TestCentralTestFlightDispatchForcesRelease(t *testing.T) {
+	cfg := &config.Config{
+		GitHub:   config.GitHubConfig{Owner: "o", Repo: "r"},
+		IOS:      config.IOSConfig{Configuration: "Debug"},
+		Security: config.SecurityConfig{Recipient: "age1recipient"},
+	}
+	got := centralDispatchInputs(cfg, "id", "ref", true)
+	if got["operation"] != "testflight" || got["configuration"] != "Release" {
+		t.Fatalf("TestFlight dispatch = %#v", got)
 	}
 }
 
