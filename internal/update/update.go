@@ -18,8 +18,8 @@ import (
 )
 
 const (
-	owner = "MobAI-App"
-	repo  = "ios-builder"
+	owner = "ori2015"
+	repo  = "ios-cloud-builder"
 )
 
 type release struct {

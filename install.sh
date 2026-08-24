@@ -1,7 +1,7 @@
 #!/bin/bash
 set -e
 
-REPO="MobAI-App/ios-builder"
+REPO="ori2015/ios-cloud-builder"
 BINARY="builder"
 INSTALL_DIR="/usr/local/bin"
 
@@ -38,17 +38,34 @@ if [ -z "$VERSION" ]; then
 fi
 echo "Latest version: $VERSION"
 
-# Download URL
+# Download URLs
 DOWNLOAD_URL="https://github.com/$REPO/releases/download/$VERSION/$BINARY-$OS-$ARCH"
+CHECKSUMS_URL="https://github.com/$REPO/releases/download/$VERSION/checksums.txt"
 echo "Downloading $BINARY-$OS-$ARCH..."
 
 # Create temp file
 TMP_FILE=$(mktemp)
-trap "rm -f $TMP_FILE" EXIT
 
 # Download
 if ! curl -sL "$DOWNLOAD_URL" -o "$TMP_FILE"; then
     echo "Download failed"
+    exit 1
+fi
+
+CHECKSUMS_FILE=$(mktemp)
+trap 'rm -f "$TMP_FILE" "$CHECKSUMS_FILE"' EXIT
+if ! curl -fsSL "$CHECKSUMS_URL" -o "$CHECKSUMS_FILE"; then
+    echo "Checksum download failed"
+    exit 1
+fi
+EXPECTED=$(awk -v name="$BINARY-$OS-$ARCH" '$2 == name { print $1 }' "$CHECKSUMS_FILE")
+if [ -z "$EXPECTED" ]; then
+    echo "Release checksum is missing for $BINARY-$OS-$ARCH"
+    exit 1
+fi
+ACTUAL=$(sha256sum "$TMP_FILE" | awk '{print $1}')
+if [ "$ACTUAL" != "$EXPECTED" ]; then
+    echo "Checksum verification failed"
     exit 1
 fi
 
