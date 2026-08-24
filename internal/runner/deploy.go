@@ -187,7 +187,7 @@ func deployTestFlight(ctx context.Context, options *TestFlightOptions, credentia
 	}
 	p12Path := filepath.Join(secretsDir, "distribution.p12")
 	profilePath := filepath.Join(secretsDir, "profile.mobileprovision")
-	apiKeyPath := filepath.Join(privateHome, ".appstoreconnect", "private_keys", "AuthKey_"+credentials.apiKeyID+".p8")
+	apiKeyPath := filepath.Join(workRoot, "private_keys", "AuthKey_"+credentials.apiKeyID+".p8")
 	if err := writeBase64Secret(credentials.p12, p12Path); err != nil {
 		return fmt.Errorf("decode distribution certificate")
 	}
