@@ -1,9 +1,12 @@
 package config
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
+
+	"filippo.io/age"
 )
 
 func TestConfig_Validate(t *testing.T) {
@@ -137,5 +140,134 @@ func TestNewManager(t *testing.T) {
 	mgr := NewManager()
 	if mgr.path != ConfigFileName {
 		t.Errorf("NewManager().path = %q, want %q", mgr.path, ConfigFileName)
+	}
+}
+
+func TestManager_LoadMigratesLegacyConfig(t *testing.T) {
+	tmpDir := t.TempDir()
+	configPath := filepath.Join(tmpDir, "builder.json")
+	legacy := []byte(`{
+  "project": "LegacyApp",
+  "platform": "ios",
+  "github": {"owner": "source-owner", "repo": "private-app"}
+}`)
+	if err := os.WriteFile(configPath, legacy, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := (&Manager{path: configPath}).Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if cfg.Backend != BackendRepository {
+		t.Errorf("Backend = %q, want %q", cfg.Backend, BackendRepository)
+	}
+	if cfg.IsCentral() {
+		t.Error("legacy config unexpectedly migrated to central mode")
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Errorf("migrated legacy Validate() error = %v", err)
+	}
+}
+
+func TestConfig_CentralDefaultsAndRoundTrip(t *testing.T) {
+	identity, err := age.GenerateX25519Identity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := &Config{
+		Project:  "PrivateApp",
+		Platform: "ios",
+		Backend:  BackendCentral,
+		GitHub:   GitHubConfig{Owner: "source-owner", Repo: "private-app"},
+		Builder:  BuilderConfig{Owner: "builder-owner", Repo: "ios-cloud-builder"},
+		Security: SecurityConfig{Recipient: identity.Recipient().String()},
+	}
+	if changed := cfg.ApplyDefaults(); !changed {
+		t.Fatal("ApplyDefaults() = false, want central workflow default")
+	}
+	if cfg.Builder.Workflow != DefaultWorkflow {
+		t.Errorf("Builder.Workflow = %q, want %q", cfg.Builder.Workflow, DefaultWorkflow)
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("Validate() error = %v", err)
+	}
+
+	data, err := json.Marshal(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var roundTrip Config
+	if err := json.Unmarshal(data, &roundTrip); err != nil {
+		t.Fatal(err)
+	}
+	if roundTrip.GitHub.Repo != "private-app" || roundTrip.Builder.Repo != "ios-cloud-builder" {
+		t.Fatalf("source/builder repositories not preserved: %#v", roundTrip)
+	}
+}
+
+func TestConfig_MigratesPreBackendCentralConfig(t *testing.T) {
+	cfg := Config{Builder: BuilderConfig{Owner: "builder", Repo: "public"}}
+	if !cfg.Migrate() {
+		t.Fatal("Migrate() = false, want changes")
+	}
+	if cfg.Backend != BackendCentral {
+		t.Errorf("Backend = %q, want %q", cfg.Backend, BackendCentral)
+	}
+	if cfg.Builder.Workflow != DefaultWorkflow {
+		t.Errorf("Builder.Workflow = %q, want %q", cfg.Builder.Workflow, DefaultWorkflow)
+	}
+}
+
+func TestConfig_CentralValidation(t *testing.T) {
+	identity, err := age.GenerateX25519Identity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	valid := Config{
+		Project:  "App",
+		Platform: "ios",
+		Backend:  BackendCentral,
+		GitHub:   GitHubConfig{Owner: "source", Repo: "private"},
+		Builder:  BuilderConfig{Owner: "builder", Repo: "public", Workflow: DefaultWorkflow},
+		Security: SecurityConfig{Recipient: identity.Recipient().String()},
+	}
+
+	tests := []struct {
+		name  string
+		field string
+		edit  func(*Config)
+	}{
+		{name: "builder owner", field: "builder.owner", edit: func(c *Config) { c.Builder.Owner = "" }},
+		{name: "builder repo", field: "builder.repo", edit: func(c *Config) { c.Builder.Repo = "" }},
+		{name: "builder workflow", field: "builder.workflow", edit: func(c *Config) { c.Builder.Workflow = "" }},
+		{name: "workflow path", field: "builder.workflow", edit: func(c *Config) { c.Builder.Workflow = "workflows/ios.yml" }},
+		{name: "recipient missing", field: "security.recipient", edit: func(c *Config) { c.Security.Recipient = "" }},
+		{name: "recipient invalid", field: "security.recipient", edit: func(c *Config) { c.Security.Recipient = "AGE-SECRET-KEY-NOT-PUBLIC" }},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := valid
+			tt.edit(&cfg)
+			err := cfg.Validate()
+			validationErr, ok := err.(*ValidationError)
+			if !ok {
+				t.Fatalf("Validate() error = %v (%T), want *ValidationError", err, err)
+			}
+			if validationErr.Field != tt.field {
+				t.Errorf("field = %q, want %q", validationErr.Field, tt.field)
+			}
+		})
+	}
+}
+
+func TestConfig_RepositoryModeDoesNotRequireCentralFields(t *testing.T) {
+	cfg := Config{
+		Project: "Legacy",
+		Backend: BackendRepository,
+		GitHub:  GitHubConfig{Owner: "owner", Repo: "repo"},
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("Validate() error = %v", err)
 	}
 }

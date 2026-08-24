@@ -26,6 +26,11 @@ func GetToken() (string, error) {
 	return auth.GetToken()
 }
 
+// GetTokenWithSource returns a local-user token and a non-secret provider label.
+func GetTokenWithSource() (string, string, error) {
+	return auth.GetTokenWithSource()
+}
+
 // Logout removes the stored GitHub token.
 func Logout() error {
 	return auth.Logout()

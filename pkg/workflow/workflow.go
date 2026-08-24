@@ -18,3 +18,8 @@ func GetWorkflowTemplate() ([]byte, error) {
 func GetShareWorkflowTemplate() ([]byte, error) {
 	return workflow.GetShareWorkflowTemplate()
 }
+
+// GetCentralWorkflowTemplate returns the hardened public central-builder workflow.
+func GetCentralWorkflowTemplate() ([]byte, error) {
+	return workflow.GetCentralWorkflowTemplate()
+}

@@ -12,15 +12,17 @@ const (
 )
 
 type (
-	Client       = github.Client
-	Repository   = github.Repository
-	WorkflowRun  = github.WorkflowRun
-	Job          = github.Job
-	JobStep      = github.JobStep
-	Artifact     = github.Artifact
-	PublicKey    = github.PublicKey
-	APIError     = github.APIError
-	ProgressFunc = github.ProgressFunc
+	Client         = github.Client
+	Repository     = github.Repository
+	WorkflowRun    = github.WorkflowRun
+	Job            = github.Job
+	JobStep        = github.JobStep
+	Artifact       = github.Artifact
+	ActionVariable = github.ActionVariable
+	ActionSecret   = github.ActionSecret
+	PublicKey      = github.PublicKey
+	APIError       = github.APIError
+	ProgressFunc   = github.ProgressFunc
 )
 
 // NewClient creates a GitHub API client authenticated with token.

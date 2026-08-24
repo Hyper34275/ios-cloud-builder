@@ -34,6 +34,26 @@ type Coordinator struct {
 	config   *config.Config
 	github   *github.Client
 	progress *Progress
+	backend  Backend
+}
+
+// Backend is the replaceable execution seam for remote build providers.
+// GitHub repository and central-builder Actions are the current adapters;
+// Codemagic or self-hosted macOS can implement the same contract later.
+type Backend interface {
+	Build(context.Context, BuildOptions) (*BuildResult, error)
+}
+
+type repositoryBackend struct{ coordinator *Coordinator }
+
+func (b *repositoryBackend) Build(ctx context.Context, opts BuildOptions) (*BuildResult, error) {
+	return b.coordinator.buildRepository(ctx, opts)
+}
+
+type centralBackend struct{ coordinator *Coordinator }
+
+func (b *centralBackend) Build(ctx context.Context, opts BuildOptions) (*BuildResult, error) {
+	return b.coordinator.buildCentral(ctx, opts)
 }
 
 // NewCoordinator creates a new build coordinator that reports progress on stdout
@@ -45,11 +65,30 @@ func NewCoordinator(cfg *config.Config, gh *github.Client) *Coordinator {
 // Callers embedding the build flow in another program pass their own writer, or
 // io.Discard to silence it.
 func NewCoordinatorWithOutput(cfg *config.Config, gh *github.Client, w io.Writer) *Coordinator {
-	return &Coordinator{
+	return NewCoordinatorWithBackend(cfg, gh, w, nil)
+}
+
+// NewCoordinatorWithBackend constructs a coordinator with a provider adapter.
+// Passing nil selects the configured built-in backend. This constructor keeps
+// future providers independent from GitHub-specific orchestration internals.
+func NewCoordinatorWithBackend(cfg *config.Config, gh *github.Client, w io.Writer, backend Backend) *Coordinator {
+	coordinator := &Coordinator{
 		config:   cfg,
 		github:   gh,
 		progress: NewProgress(w),
 	}
+	if backend == nil {
+		backend = selectExecutionBackend(coordinator)
+	}
+	coordinator.backend = backend
+	return coordinator
+}
+
+func selectExecutionBackend(coordinator *Coordinator) Backend {
+	if coordinator.config.IsCentral() {
+		return &centralBackend{coordinator: coordinator}
+	}
+	return &repositoryBackend{coordinator: coordinator}
 }
 
 // BuildOptions contains options for a build
@@ -64,6 +103,7 @@ type BuildOptions struct {
 type BuildResult struct {
 	BuildID     string
 	IPAPath     string
+	LogPath     string
 	Duration    time.Duration
 	WorkflowURL string
 	IPASize     int64
@@ -71,6 +111,13 @@ type BuildResult struct {
 
 // Build triggers a remote build and downloads the IPA artifact
 func (c *Coordinator) Build(ctx context.Context, opts BuildOptions) (*BuildResult, error) {
+	return c.backend.Build(ctx, opts)
+}
+
+// buildRepository is the original same-repository backend. Central-builder
+// behavior deliberately lives in a separate path so upstream behavior and its
+// signing/build inputs remain unchanged.
+func (c *Coordinator) buildRepository(ctx context.Context, opts BuildOptions) (*BuildResult, error) {
 	startTime := time.Now()
 
 	// Set default timeout
@@ -204,9 +251,12 @@ func (c *Coordinator) showRunningStep(ctx context.Context, runID int64) {
 	c.progress.UpdateStep(step.Name, step.Number, total, time.Since(step.StartedAt))
 }
 
-func (c *Coordinator) deleteSnapshot(ctx context.Context, remote, ref string) {
-	// The build context is already cancelled once Build returns on timeout.
-	if err := snapshot.Delete(context.WithoutCancel(ctx), remote, ref); err != nil {
+func (c *Coordinator) deleteSnapshot(_ context.Context, remote, ref string) {
+	// Cleanup must outlive a cancelled build but must never hold CLI shutdown
+	// indefinitely on a stalled credential helper or network connection.
+	cleanupCtx, cancel := context.WithTimeout(context.Background(), cleanupTimeout)
+	defer cancel()
+	if err := snapshot.Delete(cleanupCtx, remote, ref); err != nil {
 		c.progress.Warn(fmt.Sprintf("could not delete snapshot ref %s: %v", ref, err))
 	}
 }

@@ -19,15 +19,32 @@ type Repository struct {
 
 // WorkflowRun represents a GitHub Actions workflow run
 type WorkflowRun struct {
-	ID         int64     `json:"id"`
-	Name       string    `json:"name"`
-	HeadBranch string    `json:"head_branch"`
-	HeadSHA    string    `json:"head_sha"`
-	Status     string    `json:"status"`     // queued, in_progress, completed
-	Conclusion string    `json:"conclusion"` // success, failure, cancelled, skipped
-	HTMLURL    string    `json:"html_url"`
-	CreatedAt  time.Time `json:"created_at"`
-	UpdatedAt  time.Time `json:"updated_at"`
+	ID           int64     `json:"id"`
+	Name         string    `json:"name"`
+	DisplayTitle string    `json:"display_title"`
+	HeadBranch   string    `json:"head_branch"`
+	HeadSHA      string    `json:"head_sha"`
+	Status       string    `json:"status"`     // queued, in_progress, completed
+	Conclusion   string    `json:"conclusion"` // success, failure, cancelled, skipped
+	HTMLURL      string    `json:"html_url"`
+	CreatedAt    time.Time `json:"created_at"`
+	UpdatedAt    time.Time `json:"updated_at"`
+}
+
+// ActionVariable is repository-level Actions variable metadata. GitHub never
+// returns the value from this endpoint, which makes it safe for diagnostics.
+type ActionVariable struct {
+	Name      string    `json:"name"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
+// ActionSecret is repository-level Actions secret metadata. Secret values are
+// intentionally not returned by GitHub.
+type ActionSecret struct {
+	Name      string    `json:"name"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
 }
 
 // WorkflowRunsResponse is the response from listing workflow runs
@@ -85,6 +102,7 @@ type Artifact struct {
 	SizeInBytes        int64     `json:"size_in_bytes"`
 	ArchiveDownloadURL string    `json:"archive_download_url"`
 	Expired            bool      `json:"expired"`
+	Digest             string    `json:"digest"`
 	CreatedAt          time.Time `json:"created_at"`
 	ExpiresAt          time.Time `json:"expires_at"`
 }

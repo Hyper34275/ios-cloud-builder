@@ -239,6 +239,9 @@ func runSigningSetup(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
+	if cfg.IsCentral() {
+		return fmt.Errorf("central backend v1 is unsigned-only; signing setup remains available with backend=repository")
+	}
 
 	ghClient, err := getGitHubClient()
 	if err != nil {

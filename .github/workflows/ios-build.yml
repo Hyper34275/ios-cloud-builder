@@ -1,0 +1,220 @@
+name: Secure central iOS build
+run-name: iOS Build ${{ inputs.build_id }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      build_id:
+        description: Unique full build UUID
+        required: true
+        type: string
+      source_owner:
+        description: Owner of the authorized private source repository
+        required: true
+        type: string
+      source_repo:
+        description: Name of the authorized private source repository
+        required: true
+        type: string
+      snapshot_ref:
+        description: Temporary refs/ios-builder/jobs UUID snapshot
+        required: true
+        type: string
+      ios_path:
+        description: Relative iOS project directory
+        required: false
+        default: .
+        type: string
+      scheme:
+        description: Shared Xcode scheme, or empty for detection
+        required: false
+        default: ''
+        type: string
+      configuration:
+        description: Unsigned build configuration
+        required: false
+        default: Release
+        type: choice
+        options:
+          - Release
+          - Debug
+      framework_hint:
+        description: Framework hint, or auto for detection
+        required: false
+        default: auto
+        type: choice
+        options:
+          - auto
+          - native
+          - flutter
+          - react-native
+          - expo
+          - kmp
+          - cordova
+          - ionic
+      artifact_recipient:
+        description: AGE X25519 public recipient for this build
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: macos-15
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout trusted public builder
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          path: builder
+          persist-credentials: false
+
+      - name: Build trusted runner before private checkout
+        working-directory: builder
+        run: |
+          go mod verify
+          go build -trimpath -o "$RUNNER_TEMP/builder-runner" ./cmd/builder-runner
+
+      - name: Validate all dispatch inputs before credential creation
+        env:
+          BUILD_ID: ${{ inputs.build_id }}
+          SOURCE_OWNER: ${{ inputs.source_owner }}
+          SOURCE_REPO: ${{ inputs.source_repo }}
+          SNAPSHOT_REF: ${{ inputs.snapshot_ref }}
+          IOS_PATH: ${{ inputs.ios_path }}
+          SCHEME: ${{ inputs.scheme }}
+          CONFIGURATION: ${{ inputs.configuration }}
+          FRAMEWORK_HINT: ${{ inputs.framework_hint }}
+          ARTIFACT_RECIPIENT: ${{ inputs.artifact_recipient }}
+        run: |
+          "$RUNNER_TEMP/builder-runner" validate-inputs \
+            --build-id "$BUILD_ID" \
+            --source-owner "$SOURCE_OWNER" \
+            --source-repo "$SOURCE_REPO" \
+            --snapshot-ref "$SNAPSHOT_REF" \
+            --ios-path "$IOS_PATH" \
+            --scheme "$SCHEME" \
+            --configuration "$CONFIGURATION" \
+            --framework-hint "$FRAMEWORK_HINT" \
+            --artifact-recipient "$ARTIFACT_RECIPIENT"
+
+      - name: Create repository-scoped GitHub App token
+        id: source-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1
+        with:
+          client-id: ${{ vars.APP_CLIENT_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+          owner: ${{ inputs.source_owner }}
+          repositories: ${{ inputs.source_repo }}
+          permission-contents: read
+          skip-token-revoke: true
+
+      - name: Checkout exactly the authorized private snapshot
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          repository: ${{ inputs.source_owner }}/${{ inputs.source_repo }}
+          ref: ${{ inputs.snapshot_ref }}
+          token: ${{ steps.source-token.outputs.token }}
+          path: source
+          persist-credentials: false
+          fetch-depth: 1
+          fetch-tags: false
+          submodules: false
+          lfs: false
+
+      - name: Revoke private repository token before project code
+        if: always() && steps.source-token.outcome == 'success'
+        env:
+          SOURCE_TOKEN: ${{ steps.source-token.outputs.token }}
+        run: |
+          "$RUNNER_TEMP/builder-runner" revoke-token
+
+      - name: Verify checkout credential cleanup
+        run: |
+          "$RUNNER_TEMP/builder-runner" verify-checkout --source "$GITHUB_WORKSPACE/source"
+
+      - name: Detect supported iOS framework
+        id: detect
+        env:
+          FRAMEWORK_HINT: ${{ inputs.framework_hint }}
+        run: |
+          echo "Preparing framework toolchain"
+          "$RUNNER_TEMP/builder-runner" detect \
+            --source "$GITHUB_WORKSPACE/source" \
+            --framework "$FRAMEWORK_HINT" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Node.js
+        if: steps.detect.outputs.framework == 'react-native' || steps.detect.outputs.framework == 'expo' || steps.detect.outputs.framework == 'cordova' || steps.detect.outputs.framework == 'ionic'
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38
+        with:
+          node-version: '20'
+
+      - name: Set up Java for Kotlin Multiplatform
+        if: steps.detect.outputs.framework == 'kmp'
+        uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Flutter
+        if: steps.detect.outputs.framework == 'flutter'
+        uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2
+        with:
+          channel: stable
+          cache: false
+
+      - name: Build unsigned IPA and encrypt private outputs
+        id: secure-build
+        continue-on-error: true
+        env:
+          IOS_PATH: ${{ inputs.ios_path }}
+          SCHEME: ${{ inputs.scheme }}
+          CONFIGURATION: ${{ inputs.configuration }}
+          FRAMEWORK: ${{ steps.detect.outputs.framework }}
+          ARTIFACT_RECIPIENT: ${{ inputs.artifact_recipient }}
+          CODE_SIGNING_ALLOWED: 'NO'
+          CODE_SIGNING_REQUIRED: 'NO'
+        run: |
+          "$RUNNER_TEMP/builder-runner" execute \
+            --source "$GITHUB_WORKSPACE/source" \
+            --ios-path "$IOS_PATH" \
+            --scheme "$SCHEME" \
+            --configuration "$CONFIGURATION" \
+            --framework "$FRAMEWORK" \
+            --log "$RUNNER_TEMP/private-output/build.log" \
+            --ipa "$RUNNER_TEMP/private-output/App.ipa" \
+            --recipient "$ARTIFACT_RECIPIENT" \
+            --output "$RUNNER_TEMP/encrypted"
+
+      - name: Upload ciphertext only
+        id: upload
+        if: always()
+        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4
+        with:
+          name: ios-builder-${{ inputs.build_id }}
+          path: |
+            ${{ runner.temp }}/encrypted/build.log.age
+            ${{ runner.temp }}/encrypted/App.ipa.age
+          if-no-files-found: error
+          retention-days: 1
+          include-hidden-files: false
+          compression-level: 0
+
+      - name: Report private build status
+        if: always()
+        env:
+          BUILD_OUTCOME: ${{ steps.secure-build.outcome }}
+          UPLOAD_OUTCOME: ${{ steps.upload.outcome }}
+        run: |
+          if [ "$UPLOAD_OUTCOME" != "success" ]; then
+            echo "Encrypted artifact upload failed. No private diagnostics were printed."
+            exit 1
+          fi
+          if [ "$BUILD_OUTCOME" != "success" ]; then
+            echo "Build failed. Download the encrypted diagnostic log using Builder CLI."
+            exit 1
+          fi
+          echo "Build succeeded. Encrypted artifacts uploaded."

@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestCreateCapturesWorkingTreeWithoutTouchingRepo(t *testing.T) {
@@ -43,6 +44,73 @@ func TestCreateCapturesWorkingTreeWithoutTouchingRepo(t *testing.T) {
 	if got := run(t, repo, "status", "--porcelain"); got != statusBefore {
 		t.Errorf("status = %q, want unchanged %q", got, statusBefore)
 	}
+}
+
+func TestParseRepositoryURL(t *testing.T) {
+	tests := []struct {
+		url       string
+		owner     string
+		repo      string
+		wantValid bool
+	}{
+		{"https://github.com/acme/private-app.git", "acme", "private-app", true},
+		{"git@github.com:acme/private-app.git", "acme", "private-app", true},
+		{"git@work-github:acme/private-app.git", "", "", false},
+		{"git@evil.example:acme/private-app.git", "", "", false},
+		{"ssh://git@github.com/acme/private-app.git", "acme", "private-app", true},
+		{"https://example.com/acme/private-app.git", "", "", false},
+		{"https://github.com/acme/nested/private-app.git", "", "", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.url, func(t *testing.T) {
+			owner, repo, ok := parseRepositoryURL(tt.url)
+			if ok != tt.wantValid || owner != tt.owner || repo != tt.repo {
+				t.Fatalf("parseRepositoryURL() = %q, %q, %v", owner, repo, ok)
+			}
+		})
+	}
+}
+
+func TestDeleteRejectsRefsOutsideNamespace(t *testing.T) {
+	err := Delete(context.Background(), "origin", "refs/heads/main")
+	if err == nil {
+		t.Fatal("Delete accepted a normal branch")
+	}
+}
+
+func TestCleanupDeletesOnlyMarkedStaleSnapshots(t *testing.T) {
+	repo := initRepo(t)
+	remote := filepath.Join(t.TempDir(), "remote.git")
+	run(t, repo, "init", "--bare", remote)
+	tree := run(t, repo, "write-tree")
+	oldID := "123e4567-e89b-42d3-a456-426614174000"
+	oldSHA := commitTreeAt(t, repo, tree, "ios-builder snapshot "+oldID, "2025-01-01T00:00:00Z")
+	foreignID := "223e4567-e89b-42d3-a456-426614174000"
+	foreignSHA := commitTreeAt(t, repo, tree, "not an ios-builder snapshot", "2025-01-01T00:00:00Z")
+	run(t, repo, "push", remote, oldSHA+":"+Ref(oldID), foreignSHA+":"+Ref(foreignID))
+
+	removed, err := Cleanup(context.Background(), remote, 24*time.Hour, time.Date(2026, 8, 24, 0, 0, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(removed) != 1 || removed[0].Ref != Ref(oldID) {
+		t.Fatalf("removed = %#v", removed)
+	}
+	refs := run(t, repo, "ls-remote", remote, refPrefix+"*")
+	if strings.Contains(refs, Ref(oldID)) || !strings.Contains(refs, Ref(foreignID)) {
+		t.Fatalf("unexpected remaining refs: %s", refs)
+	}
+}
+
+func commitTreeAt(t *testing.T, repo, tree, message, date string) string {
+	t.Helper()
+	cmd := exec.Command("git", "-C", repo, "commit-tree", tree, "-m", message)
+	cmd.Env = append(os.Environ(), "GIT_AUTHOR_DATE="+date, "GIT_COMMITTER_DATE="+date)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("commit-tree: %v: %s", err, out)
+	}
+	return strings.TrimSpace(string(out))
 }
 
 func initRepo(t *testing.T) string {

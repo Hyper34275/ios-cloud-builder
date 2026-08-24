@@ -20,6 +20,7 @@ import (
 	"github.com/MobAI-App/ios-builder/internal/build"
 	"github.com/MobAI-App/ios-builder/internal/config"
 	"github.com/MobAI-App/ios-builder/internal/github"
+	"github.com/MobAI-App/ios-builder/internal/security"
 	"github.com/MobAI-App/ios-builder/internal/update"
 	"github.com/MobAI-App/ios-builder/internal/workflow"
 	"github.com/manifoldco/promptui"
@@ -263,6 +264,23 @@ func runInit(cmd *cobra.Command, args []string) error {
 
 	// Get remote name from flag
 	remoteName, _ := cmd.Flags().GetString("remote")
+	backendName, _ := cmd.Flags().GetString("backend")
+	builderRepo, _ := cmd.Flags().GetString("builder")
+
+	var existing *config.Config
+	if loaded, loadErr := config.NewManager().Load(); loadErr == nil {
+		existing = loaded
+	}
+	centralMode := existing != nil && existing.IsCentral()
+	switch backendName {
+	case "":
+	case string(config.BackendCentral):
+		centralMode = true
+	case string(config.BackendRepository):
+		centralMode = false
+	default:
+		return fmt.Errorf("invalid backend %q (use repository or central)", backendName)
+	}
 
 	// Detect GitHub repo from git remote
 	githubOwner, repoName, err := detectGitHubRepo(remoteName)
@@ -352,44 +370,81 @@ func runInit(cmd *cobra.Command, args []string) error {
 	}
 	fmt.Println()
 
-	// Create workflow file locally
-	fmt.Println("Creating workflow file...")
-	workflowDir := ".github/workflows"
-	if err := os.MkdirAll(workflowDir, 0755); err != nil {
-		return fmt.Errorf("failed to create workflow directory: %w", err)
+	// Repository mode retains upstream behavior. Central mode deliberately does
+	// not install any workflow into the private application repository.
+	var workflowPath, sharePath string
+	if !centralMode {
+		fmt.Println("Creating workflow file...")
+		workflowDir := ".github/workflows"
+		if err := os.MkdirAll(workflowDir, 0755); err != nil {
+			return fmt.Errorf("failed to create workflow directory: %w", err)
+		}
+
+		workflowContent, err := workflow.GetWorkflowTemplate()
+		if err != nil {
+			return fmt.Errorf("failed to get workflow template: %w", err)
+		}
+
+		workflowPath = filepath.Join(workflowDir, "ios-build.yml")
+		if err := os.WriteFile(workflowPath, workflowContent, 0644); err != nil {
+			return fmt.Errorf("failed to write workflow file: %w", err)
+		}
+		fmt.Printf("  Created: %s\n", workflowPath)
+
+		// Ship the share workflow next to the build one so `builder ios share` needs
+		// no extra setup. Dispatch-only, so it costs nothing until used.
+		shareContent, err := workflow.GetShareWorkflowTemplate()
+		if err != nil {
+			return fmt.Errorf("failed to get simulator workflow template: %w", err)
+		}
+		sharePath = filepath.Join(workflowDir, "ios-share.yml")
+		if err := os.WriteFile(sharePath, shareContent, 0644); err != nil {
+			return fmt.Errorf("failed to write simulator workflow file: %w", err)
+		}
+		fmt.Printf("  Created: %s\n", sharePath)
+	} else {
+		fmt.Println("Central backend selected; no workflow will be written to this private repository.")
 	}
 
-	workflowContent, err := workflow.GetWorkflowTemplate()
-	if err != nil {
-		return fmt.Errorf("failed to get workflow template: %w", err)
+	backend := config.BackendRepository
+	var builderCfg config.BuilderConfig
+	var securityCfg config.SecurityConfig
+	if centralMode {
+		backend = config.BackendCentral
+		if existing != nil {
+			builderCfg = existing.Builder
+			securityCfg = existing.Security
+		}
+		if builderRepo != "" {
+			parts := strings.Split(builderRepo, "/")
+			if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+				return fmt.Errorf("--builder must be OWNER/REPO")
+			}
+			builderCfg.Owner, builderCfg.Repo = parts[0], parts[1]
+		}
+		if builderCfg.Workflow == "" {
+			builderCfg.Workflow = config.DefaultWorkflow
+		}
+		if securityCfg.Recipient == "" {
+			recipient, err := security.EnsureIdentity()
+			if err != nil {
+				return fmt.Errorf("initialize local AGE identity: %w", err)
+			}
+			securityCfg.Recipient = recipient
+		}
 	}
-
-	workflowPath := filepath.Join(workflowDir, "ios-build.yml")
-	if err := os.WriteFile(workflowPath, workflowContent, 0644); err != nil {
-		return fmt.Errorf("failed to write workflow file: %w", err)
-	}
-	fmt.Printf("  Created: %s\n", workflowPath)
-
-	// Ship the share workflow next to the build one so `builder ios share` needs
-	// no extra setup. Dispatch-only, so it costs nothing until used.
-	shareContent, err := workflow.GetShareWorkflowTemplate()
-	if err != nil {
-		return fmt.Errorf("failed to get simulator workflow template: %w", err)
-	}
-	sharePath := filepath.Join(workflowDir, "ios-share.yml")
-	if err := os.WriteFile(sharePath, shareContent, 0644); err != nil {
-		return fmt.Errorf("failed to write simulator workflow file: %w", err)
-	}
-	fmt.Printf("  Created: %s\n", sharePath)
 
 	// Save config
 	cfg := &config.Config{
 		Project:  projectName,
 		Platform: "ios",
+		Backend:  backend,
 		GitHub: config.GitHubConfig{
 			Owner: githubOwner,
 			Repo:  repoName,
 		},
+		Builder:  builderCfg,
+		Security: securityCfg,
 		IOS: config.IOSConfig{
 			Path:   iosPath,
 			Scheme: scheme,
@@ -404,6 +459,9 @@ func runInit(cmd *cobra.Command, args []string) error {
 			JDKVersion: jdkVersion,
 		},
 	}
+	if err := cfg.Validate(); err != nil {
+		return err
+	}
 
 	fmt.Println("Creating builder.json...")
 	mgr := config.NewManager()
@@ -416,7 +474,13 @@ func runInit(cmd *cobra.Command, args []string) error {
 	fmt.Println("Setup complete!")
 	fmt.Println()
 
-	// Ask to commit and push
+	if centralMode {
+		fmt.Println("Private source configuration is ready. Run `builder central doctor` before the first build.")
+		fmt.Println("To build later, run: builder ios build")
+		return nil
+	}
+
+	// Ask to commit and push in repository mode.
 	commitPrompt := promptui.Prompt{
 		Label:     "Commit and push workflow",
 		IsConfirm: true,
@@ -508,6 +572,32 @@ Requires MobAI Pro and a MOBAI_API_KEY secret in the repository.`,
 	RunE: runIOSShare,
 }
 
+var iosLogsCmd = &cobra.Command{
+	Use:   "logs <build-id>",
+	Short: "Download and decrypt a central build diagnostic log",
+	Args:  cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		cfg, err := loadConfig()
+		if err != nil {
+			return err
+		}
+		if !cfg.IsCentral() {
+			return fmt.Errorf("encrypted remote logs are available only with the central backend")
+		}
+		ghClient, err := getGitHubClient()
+		if err != nil {
+			return err
+		}
+		output, _ := cmd.Flags().GetString("output")
+		path, err := build.NewCoordinator(cfg, ghClient).DownloadLogs(cmd.Context(), args[0], output)
+		if err != nil {
+			return err
+		}
+		fmt.Println("Log:", path)
+		return nil
+	},
+}
+
 var updateCmd = &cobra.Command{
 	Use:   "update",
 	Short: "Update builder to the latest release",
@@ -534,6 +624,8 @@ func init() {
 	initCmd.Flags().String("ios-path", "", "Path to iOS project (e.g., 'ios' for React Native)")
 	initCmd.Flags().String("scheme", "", "Xcode scheme to build (auto-detected if empty)")
 	initCmd.Flags().StringP("remote", "r", "origin", "Git remote name to use for GitHub repository")
+	initCmd.Flags().String("backend", "", "Execution backend: repository or central")
+	initCmd.Flags().String("builder", "", "Public central builder as OWNER/REPO")
 
 	// iOS build command flags
 	iosBuildCmd.Flags().StringP("output", "o", "dist", "Output directory for IPA")
@@ -546,6 +638,8 @@ func init() {
 	iosShareCmd.Flags().Duration("duration", 30*time.Minute, "How long the simulator stays available while unused")
 	iosShareCmd.Flags().StringP("remote", "r", "origin", "Git remote to push the working-tree snapshot to")
 	iosCmd.AddCommand(iosShareCmd)
+	iosLogsCmd.Flags().StringP("output", "o", "dist/logs", "Output directory for decrypted logs")
+	iosCmd.AddCommand(iosLogsCmd)
 }
 
 func runIOSBuild(cmd *cobra.Command, args []string) error {
@@ -557,7 +651,6 @@ func runIOSBuild(cmd *cobra.Command, args []string) error {
 	if err := cfg.Validate(); err != nil {
 		return fmt.Errorf("invalid configuration: %w", err)
 	}
-
 	outputDir, _ := cmd.Flags().GetString("output")
 	timeout, _ := cmd.Flags().GetDuration("timeout")
 	unsigned, _ := cmd.Flags().GetBool("unsigned")
@@ -567,6 +660,8 @@ func runIOSBuild(cmd *cobra.Command, args []string) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	ctx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
+	defer stop()
 
 	return runBuild(ctx, cfg, build.BuildOptions{
 		OutputDir: outputDir,
@@ -583,6 +678,9 @@ func runIOSShare(cmd *cobra.Command, args []string) error {
 	}
 	if err := cfg.Validate(); err != nil {
 		return fmt.Errorf("invalid configuration: %w", err)
+	}
+	if cfg.IsCentral() {
+		return fmt.Errorf("`builder ios share` uses the repository backend and MobAI workflow; central mode intentionally installs no workflow in the private source repository")
 	}
 
 	duration, _ := cmd.Flags().GetDuration("duration")

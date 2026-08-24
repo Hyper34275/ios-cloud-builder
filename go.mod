@@ -3,6 +3,7 @@ module github.com/MobAI-App/ios-builder
 go 1.24.0
 
 require (
+	filippo.io/age v1.3.1
 	github.com/fsnotify/fsnotify v1.9.0
 	github.com/google/uuid v1.6.0
 	github.com/gorilla/websocket v1.5.3
@@ -17,6 +18,7 @@ require (
 
 require (
 	al.essio.dev/pkg/shellescape v1.5.1 // indirect
+	filippo.io/hpke v0.4.0 // indirect
 	github.com/chzyer/readline v0.0.0-20180603132655-2972be24d48e // indirect
 	github.com/danieljoos/wincred v1.2.2 // indirect
 	github.com/go-viper/mapstructure/v2 v2.4.0 // indirect

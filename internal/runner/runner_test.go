@@ -1,0 +1,298 @@
+package runner
+
+import (
+	"bytes"
+	"io"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	"filippo.io/age"
+)
+
+func validInputs(t *testing.T) Inputs {
+	t.Helper()
+	identity, err := age.GenerateX25519Identity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	buildID := "123e4567-e89b-42d3-a456-426614174000"
+	return Inputs{
+		BuildID:           buildID,
+		SourceOwner:       "private-owner",
+		SourceRepo:        "private.app",
+		SnapshotRef:       "refs/ios-builder/jobs/" + buildID,
+		IOSPath:           "ios",
+		Scheme:            "My App",
+		Configuration:     "Release",
+		FrameworkHint:     FrameworkAuto,
+		ArtifactRecipient: identity.Recipient().String(),
+	}
+}
+
+func TestInputsValidate(t *testing.T) {
+	if err := validInputs(t).Validate(); err != nil {
+		t.Fatalf("valid inputs rejected: %v", err)
+	}
+	tests := []struct {
+		name   string
+		mutate func(*Inputs)
+	}{
+		{"short build id", func(in *Inputs) { in.BuildID = "12345678" }},
+		{"uppercase UUID", func(in *Inputs) { in.BuildID = strings.ToUpper(in.BuildID) }},
+		{"non-v4 UUID", func(in *Inputs) { in.BuildID = "123e4567-e89b-72d3-a456-426614174000" }},
+		{"owner injection", func(in *Inputs) { in.SourceOwner = "owner\nother" }},
+		{"repo list", func(in *Inputs) { in.SourceRepo = "one,two" }},
+		{"git suffix", func(in *Inputs) { in.SourceRepo = "private.git" }},
+		{"unbound snapshot", func(in *Inputs) { in.SnapshotRef = "refs/heads/main" }},
+		{"other build snapshot", func(in *Inputs) { in.SnapshotRef += "x" }},
+		{"absolute path", func(in *Inputs) { in.IOSPath = "/tmp/ios" }},
+		{"traversal path", func(in *Inputs) { in.IOSPath = "../ios" }},
+		{"unclean path", func(in *Inputs) { in.IOSPath = "app/../ios" }},
+		{"scheme newline", func(in *Inputs) { in.Scheme = "App\nrun" }},
+		{"configuration", func(in *Inputs) { in.Configuration = "Profile" }},
+		{"framework", func(in *Inputs) { in.FrameworkHint = "shell" }},
+		{"recipient", func(in *Inputs) { in.ArtifactRecipient = "age1invalid" }},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			in := validInputs(t)
+			test.mutate(&in)
+			if err := in.Validate(); err == nil {
+				t.Fatal("invalid inputs accepted")
+			}
+		})
+	}
+}
+
+func TestChildEnvironmentScrubsActionsAndCredentials(t *testing.T) {
+	t.Setenv("GITHUB_TOKEN", "secret")
+	t.Setenv("GITHUB_WORKSPACE", "/private")
+	t.Setenv("ACTIONS_RUNTIME_TOKEN", "secret")
+	t.Setenv("RUNNER_TEMP", "/runner")
+	t.Setenv("APP_PRIVATE_KEY", "secret")
+	t.Setenv("AGE_RECIPIENT", "public-but-not-needed")
+	t.Setenv("PATH", "/usr/bin")
+	t.Setenv("HOME", "/sensitive-runner-home")
+	t.Setenv("JAVA_HOME", "/java")
+	env := strings.Join(ChildEnvironment("/source", "/isolated-home"), "\n")
+	for _, forbidden := range []string{"GITHUB_", "ACTIONS_", "RUNNER_", "APP_PRIVATE_KEY", "AGE_RECIPIENT", "secret", "/sensitive-runner-home"} {
+		if strings.Contains(env, forbidden) {
+			t.Fatalf("child environment leaked %q: %s", forbidden, env)
+		}
+	}
+	for _, required := range []string{"PATH=/usr/bin", "HOME=/isolated-home", "JAVA_HOME=/java", "CODE_SIGNING_ALLOWED=NO"} {
+		if !strings.Contains(env, required) {
+			t.Fatalf("child environment missing %q: %s", required, env)
+		}
+	}
+}
+
+func TestDetectFramework(t *testing.T) {
+	tests := []struct {
+		name, path, content, want string
+	}{
+		{"flutter", "pubspec.yaml", "name: app", FrameworkFlutter},
+		{"expo", "package.json", `{"dependencies":{"expo":"1"}}`, FrameworkExpo},
+		{"react native", "package.json", `{"dependencies":{"react-native":"1"}}`, FrameworkReactNative},
+		{"ionic", "package.json", `{"dependencies":{"@ionic/core":"1"}}`, FrameworkIonic},
+		{"cordova", "config.xml", "<widget/>", FrameworkCordova},
+		{"kmp", "shared/build.gradle.kts", `plugins { kotlin("multiplatform") }`, FrameworkKMP},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			root := t.TempDir()
+			path := filepath.Join(root, test.path)
+			if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(path, []byte(test.content), 0600); err != nil {
+				t.Fatal(err)
+			}
+			got, err := DetectFramework(root, FrameworkAuto)
+			if err != nil || got != test.want {
+				t.Fatalf("DetectFramework() = %q, %v; want %q", got, err, test.want)
+			}
+		})
+	}
+}
+
+func TestCapacitorAndXcodeGenDetection(t *testing.T) {
+	root := t.TempDir()
+	if isCapacitorProject(root) {
+		t.Fatal("empty project detected as Capacitor")
+	}
+	if err := os.WriteFile(filepath.Join(root, "capacitor.config.ts"), []byte("export default {}"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if !isCapacitorProject(root) {
+		t.Fatal("Capacitor config was not detected")
+	}
+	if hasXcodeGenManifest(root) {
+		t.Fatal("Capacitor config detected as XcodeGen")
+	}
+	if err := os.WriteFile(filepath.Join(root, "project.yml"), []byte("name: App\ntargets:\n  App: {}\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if !hasXcodeGenManifest(root) {
+		t.Fatal("XcodeGen targets manifest was not detected")
+	}
+}
+
+func TestMakeGradleWrapperExecutable(t *testing.T) {
+	root := t.TempDir()
+	wrapper := filepath.Join(root, "gradlew")
+	if err := os.WriteFile(wrapper, []byte("#!/bin/sh\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := makeGradleWrapperExecutable(root); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(wrapper)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm()&0111 == 0 {
+		t.Fatalf("gradlew mode = %o; expected executable", info.Mode().Perm())
+	}
+}
+
+func TestEncryptArtifactsRoundTripAndDeletesPlaintext(t *testing.T) {
+	identity, err := age.GenerateX25519Identity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	root := t.TempDir()
+	logPath := filepath.Join(root, "plain", "build.log")
+	ipaPath := filepath.Join(root, "plain", "App.ipa")
+	if err := os.MkdirAll(filepath.Dir(logPath), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(logPath, []byte("private compiler diagnostics"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(ipaPath, []byte("private ipa"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	output := filepath.Join(root, "encrypted")
+	if err := EncryptArtifacts(identity.Recipient().String(), logPath, ipaPath, output); err != nil {
+		t.Fatal(err)
+	}
+	for _, plain := range []string{logPath, ipaPath} {
+		if _, err := os.Stat(plain); !os.IsNotExist(err) {
+			t.Fatalf("plaintext was not deleted: %s", plain)
+		}
+	}
+	entries, err := os.ReadDir(output)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 2 || entries[0].Name() != "App.ipa.age" || entries[1].Name() != "build.log.age" {
+		t.Fatalf("unexpected ciphertext members: %v", entries)
+	}
+	got := decryptFile(t, filepath.Join(output, "App.ipa.age"), identity)
+	if got != "private ipa" {
+		t.Fatalf("decrypted IPA = %q", got)
+	}
+}
+
+func TestEncryptArtifactsFailureStillDeletesPlaintext(t *testing.T) {
+	root := t.TempDir()
+	logPath := filepath.Join(root, "build.log")
+	if err := os.WriteFile(logPath, []byte("private"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := EncryptArtifacts("invalid", logPath, "", filepath.Join(root, "out")); err == nil {
+		t.Fatal("invalid recipient accepted")
+	}
+	if _, err := os.Stat(logPath); !os.IsNotExist(err) {
+		t.Fatal("plaintext retained after encryption failure")
+	}
+}
+
+func TestEncryptArtifactsRejectsUnexpectedOutputMembers(t *testing.T) {
+	identity, err := age.GenerateX25519Identity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	root := t.TempDir()
+	logPath := filepath.Join(root, "build.log")
+	output := filepath.Join(root, "encrypted")
+	if err := os.Mkdir(output, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(output, "private-source.txt"), []byte("must not upload"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(output, "App.ipa.age"), []byte("untrusted preplant"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(logPath, []byte("private"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := EncryptArtifacts(identity.Recipient().String(), logPath, "", output); err == nil {
+		t.Fatal("unexpected output member was accepted")
+	}
+	if _, err := os.Stat(logPath); !os.IsNotExist(err) {
+		t.Fatal("plaintext log retained after output validation failure")
+	}
+	if _, err := os.Stat(filepath.Join(output, "App.ipa.age")); !os.IsNotExist(err) {
+		t.Fatal("untrusted allowlisted preplant was retained")
+	}
+}
+
+func TestBuildOptionsRequireFixedPrivateOutput(t *testing.T) {
+	root := t.TempDir()
+	source := filepath.Join(root, "source")
+	options := BuildOptions{
+		SourceRoot: source, IOSPath: ".", Configuration: "Release", Framework: FrameworkNative,
+		LogPath: filepath.Join(root, "private-output", "build.log"),
+		IPAPath: filepath.Join(root, "private-output", "App.ipa"),
+	}
+	if err := options.validate(); err != nil {
+		t.Fatalf("fixed output paths rejected: %v", err)
+	}
+	options.IPAPath = filepath.Join(root, "private-output", "source.zip")
+	if err := options.validate(); err == nil {
+		t.Fatal("arbitrary private output name accepted")
+	}
+}
+
+func decryptFile(t *testing.T, path string, identity age.Identity) string {
+	t.Helper()
+	ciphertext, err := os.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ciphertext.Close()
+	reader, err := age.Decrypt(ciphertext, identity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var plain bytes.Buffer
+	if _, err := io.Copy(&plain, reader); err != nil {
+		t.Fatal(err)
+	}
+	return plain.String()
+}
+
+func TestVerifyCheckoutNoCredentials(t *testing.T) {
+	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, ".git"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	config := filepath.Join(root, ".git", "config")
+	if err := os.WriteFile(config, []byte("[remote \"origin\"]\nurl = https://github.com/o/r\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := VerifyCheckoutNoCredentials(root); err != nil {
+		t.Fatalf("clean checkout rejected: %v", err)
+	}
+	if err := os.WriteFile(config, []byte("[http \"https://github.com/\"]\nextraheader = AUTHORIZATION: basic secret\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := VerifyCheckoutNoCredentials(root); err == nil {
+		t.Fatal("persisted checkout credential accepted")
+	}
+}

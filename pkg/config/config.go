@@ -9,18 +9,27 @@ package config
 import "github.com/MobAI-App/ios-builder/internal/config"
 
 // ConfigFileName is the default configuration file name.
-const ConfigFileName = config.ConfigFileName
+const (
+	ConfigFileName    = config.ConfigFileName
+	BackendRepository = config.BackendRepository
+	BackendCentral    = config.BackendCentral
+	DefaultWorkflow   = config.DefaultWorkflow
+)
 
 // ErrConfigNotFound indicates builder.json was not found.
 var ErrConfigNotFound = config.ErrConfigNotFound
 
 type (
 	Config            = config.Config
+	Backend           = config.Backend
 	GitHubConfig      = config.GitHubConfig
+	BuilderConfig     = config.BuilderConfig
+	SecurityConfig    = config.SecurityConfig
 	IOSConfig         = config.IOSConfig
 	FlutterConfig     = config.FlutterConfig
 	WatchConfig       = config.WatchConfig
 	ReactNativeConfig = config.ReactNativeConfig
+	KMPConfig         = config.KMPConfig
 	MobAIConfig       = config.MobAIConfig
 	ValidationError   = config.ValidationError
 	Manager           = config.Manager

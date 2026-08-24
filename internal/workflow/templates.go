@@ -24,6 +24,12 @@ func GetWorkflowTemplate() ([]byte, error) {
 	return GetTemplate("ios-build.yml")
 }
 
+// GetCentralWorkflowTemplate returns the hardened workflow installed only in
+// the public central-builder repository.
+func GetCentralWorkflowTemplate() ([]byte, error) {
+	return GetTemplate("central-ios-build.yml")
+}
+
 // GetShareWorkflowTemplate returns the workflow that builds for the simulator
 // and then makes that simulator usable from the MobAI app.
 func GetShareWorkflowTemplate() ([]byte, error) {

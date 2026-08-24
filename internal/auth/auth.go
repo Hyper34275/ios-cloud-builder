@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -76,21 +77,51 @@ var ErrNotAuthenticated = errors.New("not authenticated")
 
 // GetToken retrieves the stored GitHub token from the OS keychain or file storage.
 func GetToken() (string, error) {
+	token, _, err := GetTokenWithSource()
+	return token, err
+}
+
+// GetTokenWithSource retrieves a local-user GitHub credential and reports the
+// provider used without ever exposing the credential itself. Runner-side
+// GitHub App authentication is intentionally separate and never passes through
+// this package.
+func GetTokenWithSource() (string, string, error) {
+	for _, name := range []string{"BUILDER_GITHUB_TOKEN", "GH_TOKEN", "GITHUB_TOKEN"} {
+		if token := strings.TrimSpace(os.Getenv(name)); token != "" {
+			return token, "environment (" + name + ")", nil
+		}
+	}
+
+	// On Linux and WSL, gh is generally safer and more convenient than a
+	// plaintext token file. A short timeout prevents a broken installation from
+	// delaying every builder command.
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if path, err := exec.LookPath("gh"); err == nil {
+		cmd := exec.CommandContext(ctx, path, "auth", "token", "--hostname", "github.com")
+		cmd.Stderr = nil
+		if out, err := cmd.Output(); err == nil {
+			if token := strings.TrimSpace(string(out)); token != "" {
+				return token, "GitHub CLI", nil
+			}
+		}
+	}
+
 	// Skip the keyring on Linux/WSL - it needs a desktop Secret Service that
 	// is usually absent there, and the call can hang.
 	if runtime.GOOS != "linux" {
 		if token, err := keyring.Get(keyringService, keyringUser); err == nil {
-			return token, nil
+			return token, "OS keyring", nil
 		}
 	}
 	token, err := getTokenFromFile()
 	if err == nil {
-		return token, nil
+		return token, "builder credential file", nil
 	}
 	if errors.Is(err, ErrNotAuthenticated) {
-		return "", ErrNotAuthenticated
+		return "", "", ErrNotAuthenticated
 	}
-	return "", fmt.Errorf("failed to get token: %w", err)
+	return "", "", fmt.Errorf("failed to get token: %w", err)
 }
 
 // Logout removes the stored GitHub token from keychain and file storage.

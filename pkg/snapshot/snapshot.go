@@ -6,9 +6,14 @@ package snapshot
 
 import (
 	"context"
+	"time"
 
 	"github.com/MobAI-App/ios-builder/internal/snapshot"
 )
+
+const DefaultMaxAge = snapshot.DefaultMaxAge
+
+type RemoteRef = snapshot.RemoteRef
 
 // Ref returns the remote ref that holds the snapshot for a build.
 func Ref(buildID string) string {
@@ -30,4 +35,20 @@ func Push(ctx context.Context, remote, sha, ref string) error {
 // Delete removes ref from the remote.
 func Delete(ctx context.Context, remote, ref string) error {
 	return snapshot.Delete(ctx, remote, ref)
+}
+
+func DeleteLease(ctx context.Context, remote, ref, expectedSHA string) error {
+	return snapshot.DeleteLease(ctx, remote, ref, expectedSHA)
+}
+
+func VerifyRemote(ctx context.Context, remote, owner, repo string) error {
+	return snapshot.VerifyRemote(ctx, remote, owner, repo)
+}
+
+func ListStale(ctx context.Context, remote string, maxAge time.Duration, now time.Time) ([]RemoteRef, error) {
+	return snapshot.ListStale(ctx, remote, maxAge, now)
+}
+
+func Cleanup(ctx context.Context, remote string, maxAge time.Duration, now time.Time) ([]RemoteRef, error) {
+	return snapshot.Cleanup(ctx, remote, maxAge, now)
 }

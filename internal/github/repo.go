@@ -52,3 +52,27 @@ func (c *Client) CreateOrUpdateSecret(ctx context.Context, owner, repo, name, en
 
 	return nil
 }
+
+// GetWorkflow verifies that a workflow exists and is readable. The decoded
+// body is deliberately discarded; doctor only needs the HTTP status.
+func (c *Client) GetWorkflow(ctx context.Context, owner, repo, workflow string) error {
+	return c.do(ctx, fmt.Sprintf("/repos/%s/%s/actions/workflows/%s", owner, repo, workflow), nil)
+}
+
+// GetActionVariable returns variable metadata without exposing its value.
+func (c *Client) GetActionVariable(ctx context.Context, owner, repo, name string) (*ActionVariable, error) {
+	var variable ActionVariable
+	if err := c.do(ctx, fmt.Sprintf("/repos/%s/%s/actions/variables/%s", owner, repo, name), &variable); err != nil {
+		return nil, err
+	}
+	return &variable, nil
+}
+
+// GetActionSecret returns secret metadata. GitHub never returns secret values.
+func (c *Client) GetActionSecret(ctx context.Context, owner, repo, name string) (*ActionSecret, error) {
+	var secret ActionSecret
+	if err := c.do(ctx, fmt.Sprintf("/repos/%s/%s/actions/secrets/%s", owner, repo, name), &secret); err != nil {
+		return nil, err
+	}
+	return &secret, nil
+}
