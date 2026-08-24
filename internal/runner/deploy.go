@@ -217,6 +217,12 @@ func deployTestFlight(ctx context.Context, options *TestFlightOptions, credentia
 	if err := run.runSensitive(workRoot, "/usr/bin/security", "list-keychains", "-d", "user", "-s", keychainPath); err != nil {
 		return err
 	}
+	// security cms consults the user's default keychain even when it only
+	// decodes a provisioning profile. The deployment HOME is intentionally
+	// isolated and starts without one, so point it at the disposable keychain.
+	if err := run.runSensitive(workRoot, "/usr/bin/security", "default-keychain", "-d", "user", "-s", keychainPath); err != nil {
+		return err
+	}
 	identityOutput, err := run.capture(workRoot, "/usr/bin/security", "find-identity", "-v", "-p", "codesigning", keychainPath)
 	if err != nil {
 		return err
