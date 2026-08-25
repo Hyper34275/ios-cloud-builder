@@ -50,7 +50,7 @@ Local workstation (Linux/WSL/macOS; Windows through PowerShell/WSL):
 - A Git remote using an explicit `github.com` HTTPS or SSH URL
 - Builder CLI
 
-The public builder workflow uses the stable `macos-15` runner image. No local Mac, Xcode, certificate, or provisioning profile is required for an unsigned central build. TestFlight deployment requires an Apple Distribution certificate, App Store distribution provisioning profile, and App Store Connect API key.
+The public builder workflow uses the stable `macos-15` runner image. No local Mac, Xcode, certificate, or provisioning profile is required for an unsigned central build. TestFlight deployment requires an Apple Distribution certificate, one or more App Store distribution provisioning profiles, and an App Store Connect API key.
 
 ## Install the CLI
 
@@ -145,7 +145,8 @@ Configure these values in `apple-production`:
 | Environment secret | `APPLE_SIGNING_AGE_IDENTITY` | dedicated AGE identity |
 | Environment secret | `APPLE_DISTRIBUTION_P12` | base64-encoded `.p12` |
 | Environment secret | `APPLE_DISTRIBUTION_P12_PASSWORD` | `.p12` password |
-| Environment secret | `APPLE_PROVISIONING_PROFILE` | base64-encoded App Store `.mobileprovision` |
+| Environment secret | `APPLE_PROVISIONING_PROFILES` | base64-encoded ZIP of App Store `.mobileprovision` files |
+| Environment secret (legacy) | `APPLE_PROVISIONING_PROFILE` | base64-encoded single App Store `.mobileprovision`; used when the bundle secret is absent |
 | Environment secret | `ASC_API_KEY_P8` | complete `.p8` PEM or its base64 encoding |
 | Environment secret | `ASC_KEY_ID` | App Store Connect API key ID |
 | Environment secret | `ASC_ISSUER_ID` | App Store Connect issuer UUID for a Team key; omit for an Individual key |
@@ -158,6 +159,24 @@ key is used instead, it applies across all apps and `ASC_ISSUER_ID` is required.
 Revoke and replace any certificate, API key, or GitHub App key that was ever
 committed, pasted into a public log, or otherwise exposed; moving an exposed
 credential into a secret does not make the old credential safe.
+
+Create the multi-application profile bundle on a trusted workstation. Filenames
+are only labels: the protected runner selects a profile from its signed
+`application-identifier` entitlement and requires an exact Bundle ID match.
+Keep only App Store distribution profiles for `APPLE_TEAM_ID` in this ZIP.
+
+```bash
+umask 077
+zip -j /tmp/apple-provisioning-profiles.zip /trusted/profiles/*.mobileprovision
+base64 < /tmp/apple-provisioning-profiles.zip | gh secret set APPLE_PROVISIONING_PROFILES --env apple-production --repo YOUR_ACCOUNT/ios-cloud-builder
+```
+
+Securely remove the temporary ZIP after setting the secret. During migration,
+both profile secrets may exist; candidates from both are considered. Once at
+least one deployment per configured Bundle ID succeeds, the legacy
+`APPLE_PROVISIONING_PROFILE` secret can be removed. The bundle is limited by
+GitHub's Environment-secret size limit; split certificates/teams across
+separate protected builders if the compressed profiles no longer fit.
 
 Verify metadata without reading secret values:
 
@@ -254,7 +273,7 @@ Store Connect before uploading it.
 - Cordova/Ionic generated iOS projects
 - XcodeGen manifests
 
-Schemes and workspaces/projects are detected where possible. The source build always passes `CODE_SIGNING_ALLOWED=NO` and packages the device `.app` as an unsigned IPA. In TestFlight mode, the separate protected job manually signs that app with one App Store provisioning profile. Apps containing extensions, Watch apps, XPC services, or other embedded applications require additional profiles and are rejected rather than partially signed.
+Schemes and workspaces/projects are detected where possible. The source build always passes `CODE_SIGNING_ALLOWED=NO` and packages the device `.app` as an unsigned IPA. In TestFlight mode, the separate protected job manually signs that app with the matching App Store provisioning profile from the protected multi-application bundle. Apps containing extensions, Watch apps, XPC services, or other embedded applications require nested-bundle signing support and are rejected rather than partially signed.
 
 ## Repository backend and retained commands
 
@@ -291,9 +310,10 @@ builder update
 
 With `--testflight`, doctor additionally verifies metadata for
 `APPLE_SIGNING_RECIPIENT`, the `apple-production` Environment, `APPLE_TEAM_ID`,
-every required Environment secret, a non-empty required-reviewer rule with
+every required Environment secret, either `APPLE_PROVISIONING_PROFILES` or the
+legacy `APPLE_PROVISIONING_PROFILE`, a non-empty required-reviewer rule with
 self-review allowed, and an exact custom branch allowlist containing only the
-builder's default branch. It cannot verify secret values.
+builder's default branch. It cannot verify secret values or profile coverage.
 
 ## Updating and contributing
 
@@ -313,7 +333,7 @@ go build ./cmd/builder-runner
 - Repository/source names and workflow inputs are public metadata even though source contents and outputs are encrypted.
 - A malicious project or dependency runs as the runner user and is not strongly sandboxed.
 - The central hosted-runner design has the policy caveat described in [COMPLIANCE.md](COMPLIANCE.md).
-- Central TestFlight manual signing currently supports a single application provisioning profile and rejects embedded app extensions.
+- Central TestFlight supports multiple top-level applications by exact Bundle ID, but still rejects embedded app extensions, Watch apps, App Clips, and XPC services that require nested-bundle signing and additional profiles.
 - A successful upload means App Store Connect accepted the binary; it does not mean Apple's asynchronous processing or review has completed.
 - Private GitHub SSH aliases are rejected in central mode because the CLI cannot prove an alias resolves to GitHub; use an explicit `git@github.com:OWNER/REPO.git` or `https://github.com/OWNER/REPO.git` remote.
 - Failed artifact deletion is non-fatal; ciphertext expires after one day.

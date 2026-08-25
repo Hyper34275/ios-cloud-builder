@@ -55,7 +55,7 @@ uploaded to GitHub.
 
 ### Apple credential compromise
 
-The distribution certificate, its password, provisioning profile, App Store
+The distribution certificate, its password, provisioning profile bundle, App Store
 Connect key, and transport AGE identity are Environment secrets. Secret values
 are removed from the trusted runner's environment before child processes start,
 sensitive command arguments are not written to diagnostics, and credential
@@ -84,6 +84,6 @@ Public workflow metadata/inputs can expose source owner/repository names, iOS pa
 
 - Protecting source from GitHub's runner/control plane.
 - Safely building intentionally malicious private projects in a strong sandbox.
-- Automatic provisioning and multi-profile signing for extensions, Watch apps, or XPC services.
+- Automatic provisioning and multi-profile signing for extensions, Watch apps, App Clips, or XPC services.
 - Hiding Apple credentials from GitHub's protected signing runner/control plane.
 - Guaranteeing GitHub policy approval; see [COMPLIANCE.md](../COMPLIANCE.md).

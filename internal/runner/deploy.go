@@ -2,6 +2,7 @@ package runner
 
 import (
 	"archive/zip"
+	"bytes"
 	"context"
 	"crypto/rand"
 	"crypto/sha1" // #nosec G505 -- Apple profile certificate identifiers are SHA-1 fingerprints, not signatures.
@@ -27,6 +28,8 @@ const (
 	maxDeployIPABytes = int64(1024 * 1024 * 1024)
 	maxDeployEntries  = 100000
 	maxSecretBytes    = 2 * 1024 * 1024
+	maxProfiles       = 100
+	maxProfileBytes   = 512 * 1024
 )
 
 var (
@@ -50,6 +53,7 @@ type appleCredentials struct {
 	p12         string
 	p12Password string
 	profile     string
+	profiles    string
 	teamID      string
 	apiKey      string
 	apiKeyID    string
@@ -66,6 +70,11 @@ type provisioningProfile struct {
 	ProvisionedDevices    []string       `plist:"ProvisionedDevices"`
 	ProvisionsAllDevices  bool           `plist:"ProvisionsAllDevices"`
 	Entitlements          map[string]any `plist:"Entitlements"`
+}
+
+type provisioningProfileCandidate struct {
+	path    string
+	profile provisioningProfile
 }
 
 // ExecuteTestFlight decrypts an authenticated unsigned IPA, signs it without
@@ -126,13 +135,14 @@ func takeAppleCredentials() (*appleCredentials, error) {
 		p12:         take("APPLE_DISTRIBUTION_P12"),
 		p12Password: takeRaw("APPLE_DISTRIBUTION_P12_PASSWORD"),
 		profile:     take("APPLE_PROVISIONING_PROFILE"),
+		profiles:    take("APPLE_PROVISIONING_PROFILES"),
 		teamID:      take("APPLE_TEAM_ID"),
 		apiKey:      take("ASC_API_KEY_P8"),
 		apiKeyID:    take("ASC_KEY_ID"),
 		issuerID:    take("ASC_ISSUER_ID"),
 	}
 	if credentials.ageIdentity == "" || credentials.p12 == "" || credentials.p12Password == "" ||
-		credentials.profile == "" || credentials.teamID == "" || credentials.apiKey == "" ||
+		(credentials.profile == "" && credentials.profiles == "") || credentials.teamID == "" || credentials.apiKey == "" ||
 		credentials.apiKeyID == "" {
 		return nil, fmt.Errorf("protected Apple environment is incomplete")
 	}
@@ -180,19 +190,23 @@ func deployTestFlight(ctx context.Context, options *TestFlightOptions, credentia
 	if err := setBundleBuildNumber(filepath.Join(appPath, "Info.plist"), options.BuildNumber); err != nil {
 		return err
 	}
+	bundleID, err := readBundleID(filepath.Join(appPath, "Info.plist"))
+	if err != nil {
+		return err
+	}
 
 	secretsDir := filepath.Join(workRoot, "credentials")
 	if err := os.Mkdir(secretsDir, 0700); err != nil {
 		return fmt.Errorf("prepare credential files")
 	}
 	p12Path := filepath.Join(secretsDir, "distribution.p12")
-	profilePath := filepath.Join(secretsDir, "profile.mobileprovision")
 	apiKeyPath := filepath.Join(workRoot, "private_keys", "AuthKey_"+credentials.apiKeyID+".p8")
 	if err := writeBase64Secret(credentials.p12, p12Path); err != nil {
 		return fmt.Errorf("decode distribution certificate")
 	}
-	if err := writeBase64Secret(credentials.profile, profilePath); err != nil {
-		return fmt.Errorf("decode provisioning profile")
+	profilePaths, err := materializeProvisioningProfiles(credentials.profile, credentials.profiles, secretsDir)
+	if err != nil {
+		return err
 	}
 	if err := writeTextOrBase64Secret(credentials.apiKey, apiKeyPath, "PRIVATE KEY"); err != nil {
 		return fmt.Errorf("decode App Store Connect key")
@@ -235,31 +249,23 @@ func deployTestFlight(ctx context.Context, options *TestFlightOptions, credentia
 	}
 	identityFingerprint, signingIdentity := identityMatch[1], identityMatch[2]
 
-	profileOutput, err := run.capture(workRoot, "/usr/bin/security", "cms", "-D", "-i", profilePath, "-k", keychainPath)
+	candidates := make([]provisioningProfileCandidate, 0, len(profilePaths))
+	for _, candidatePath := range profilePaths {
+		profileOutput, captureErr := run.capture(workRoot, "/usr/bin/security", "cms", "-D", "-i", candidatePath, "-k", keychainPath)
+		if captureErr != nil {
+			return captureErr
+		}
+		var candidate provisioningProfile
+		if _, unmarshalErr := plist.Unmarshal(profileOutput, &candidate); unmarshalErr != nil {
+			return fmt.Errorf("parse provisioning profile bundle")
+		}
+		candidates = append(candidates, provisioningProfileCandidate{path: candidatePath, profile: candidate})
+	}
+	selected, err := selectProvisioningProfile(candidates, credentials.teamID, bundleID, identityFingerprint)
 	if err != nil {
 		return err
 	}
-	var profile provisioningProfile
-	if _, err := plist.Unmarshal(profileOutput, &profile); err != nil {
-		return fmt.Errorf("parse provisioning profile")
-	}
-	if profile.UUID == "" || profile.Name == "" || len(profile.TeamIdentifier) != 1 || profile.TeamIdentifier[0] != credentials.teamID {
-		return fmt.Errorf("provisioning profile does not match APPLE_TEAM_ID")
-	}
-	if err := validateAppStoreProfile(&profile); err != nil {
-		return err
-	}
-	if !profileAuthorizesIdentity(profile.DeveloperCertificates, identityFingerprint) {
-		return fmt.Errorf("distribution certificate is not authorized by the provisioning profile")
-	}
-	bundleID, err := readBundleID(filepath.Join(appPath, "Info.plist"))
-	if err != nil {
-		return err
-	}
-	applicationID, _ := profile.Entitlements["application-identifier"].(string)
-	if !profileMatchesBundle(applicationID, credentials.teamID, bundleID) {
-		return fmt.Errorf("provisioning profile does not match the application bundle identifier")
-	}
+	profilePath, profile := selected.path, selected.profile
 	installedProfile := filepath.Join(privateHome, "Library", "MobileDevice", "Provisioning Profiles", profile.UUID+".mobileprovision")
 	if err := copyPrivateFile(profilePath, installedProfile); err != nil {
 		return fmt.Errorf("install provisioning profile")
@@ -522,6 +528,87 @@ func profileMatchesBundle(applicationID, teamID, bundleID string) bool {
 	return strings.HasPrefix(applicationID, prefix) && strings.TrimPrefix(applicationID, prefix) == bundleID
 }
 
+func materializeProvisioningProfiles(singleProfile, profileBundle, destinationDir string) ([]string, error) {
+	var paths []string
+	if singleProfile != "" {
+		profilePath := filepath.Join(destinationDir, "profile-legacy.mobileprovision")
+		if err := writeBase64Secret(singleProfile, profilePath); err != nil {
+			return nil, fmt.Errorf("decode legacy provisioning profile")
+		}
+		paths = append(paths, profilePath)
+	}
+	if profileBundle == "" {
+		return paths, nil
+	}
+
+	archive, err := decodeBase64Secret(profileBundle)
+	if err != nil {
+		return nil, fmt.Errorf("decode provisioning profile bundle")
+	}
+	reader, err := zip.NewReader(bytes.NewReader(archive), int64(len(archive)))
+	if err != nil || len(reader.File) == 0 || len(reader.File) > maxProfiles {
+		return nil, fmt.Errorf("invalid provisioning profile bundle")
+	}
+	var declaredTotal, actualTotal uint64
+	for index, entry := range reader.File {
+		clean := path.Clean(entry.Name)
+		if clean != entry.Name || path.Base(clean) != clean || strings.HasPrefix(clean, ".") ||
+			!strings.HasSuffix(strings.ToLower(clean), ".mobileprovision") || !entry.Mode().IsRegular() ||
+			entry.UncompressedSize64 == 0 || entry.UncompressedSize64 > maxProfileBytes ||
+			declaredTotal > uint64(maxSecretBytes)-entry.UncompressedSize64 {
+			return nil, fmt.Errorf("invalid provisioning profile bundle member")
+		}
+		declaredTotal += entry.UncompressedSize64
+		source, openErr := entry.Open()
+		if openErr != nil {
+			return nil, fmt.Errorf("read provisioning profile bundle")
+		}
+		data, readErr := io.ReadAll(io.LimitReader(source, maxProfileBytes+1))
+		closeErr := source.Close()
+		if readErr != nil || closeErr != nil || len(data) == 0 || len(data) > maxProfileBytes ||
+			actualTotal > uint64(maxSecretBytes)-uint64(len(data)) {
+			return nil, fmt.Errorf("read provisioning profile bundle")
+		}
+		actualTotal += uint64(len(data))
+		profilePath := filepath.Join(destinationDir, fmt.Sprintf("profile-%03d.mobileprovision", index))
+		if err := writePrivateFile(profilePath, data); err != nil {
+			return nil, fmt.Errorf("write provisioning profile bundle")
+		}
+		paths = append(paths, profilePath)
+	}
+	return paths, nil
+}
+
+func selectProvisioningProfile(candidates []provisioningProfileCandidate, teamID, bundleID, identityFingerprint string) (provisioningProfileCandidate, error) {
+	var matching []provisioningProfileCandidate
+	for _, candidate := range candidates {
+		profile := candidate.profile
+		if profile.UUID == "" || profile.Name == "" || len(profile.TeamIdentifier) != 1 || profile.TeamIdentifier[0] != teamID {
+			return provisioningProfileCandidate{}, fmt.Errorf("provisioning profile bundle does not match APPLE_TEAM_ID")
+		}
+		applicationID, ok := profile.Entitlements["application-identifier"].(string)
+		if !ok || applicationID == "" {
+			return provisioningProfileCandidate{}, fmt.Errorf("provisioning profile bundle has no application identifier")
+		}
+		if profileMatchesBundle(applicationID, teamID, bundleID) {
+			matching = append(matching, candidate)
+		}
+	}
+	if len(matching) == 0 {
+		return provisioningProfileCandidate{}, fmt.Errorf("no provisioning profile matches the application bundle identifier")
+	}
+	sort.SliceStable(matching, func(i, j int) bool {
+		return matching[i].profile.ExpirationDate.After(matching[j].profile.ExpirationDate)
+	})
+	for _, candidate := range matching {
+		if validateAppStoreProfile(&candidate.profile) == nil &&
+			profileAuthorizesIdentity(candidate.profile.DeveloperCertificates, identityFingerprint) {
+			return candidate, nil
+		}
+	}
+	return provisioningProfileCandidate{}, fmt.Errorf("no current matching provisioning profile authorizes the distribution certificate")
+}
+
 func validateAppStoreProfile(profile *provisioningProfile) error {
 	if profile.ExpirationDate.IsZero() || !profile.ExpirationDate.After(time.Now().Add(5*time.Minute)) {
 		return fmt.Errorf("provisioning profile is expired or near expiry")
@@ -552,8 +639,16 @@ func profileAuthorizesIdentity(certificates [][]byte, identity string) bool {
 }
 
 func writeBase64Secret(value, destination string) error {
+	data, err := decodeBase64Secret(value)
+	if err != nil {
+		return err
+	}
+	return writePrivateFile(destination, data)
+}
+
+func decodeBase64Secret(value string) ([]byte, error) {
 	if len(value) > maxSecretBytes*2 {
-		return fmt.Errorf("secret is too large")
+		return nil, fmt.Errorf("secret is too large")
 	}
 	data, err := base64.StdEncoding.DecodeString(strings.Map(func(r rune) rune {
 		if r == '\r' || r == '\n' || r == ' ' || r == '\t' {
@@ -562,9 +657,9 @@ func writeBase64Secret(value, destination string) error {
 		return r
 	}, value))
 	if err != nil || len(data) == 0 || len(data) > maxSecretBytes {
-		return fmt.Errorf("invalid base64 secret")
+		return nil, fmt.Errorf("invalid base64 secret")
 	}
-	return writePrivateFile(destination, data)
+	return data, nil
 }
 
 func writeTextOrBase64Secret(value, destination, marker string) error {

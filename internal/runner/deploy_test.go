@@ -2,7 +2,9 @@ package runner
 
 import (
 	"archive/zip"
+	"bytes"
 	"crypto/sha1"
+	"encoding/base64"
 	"encoding/hex"
 	"errors"
 	"os"
@@ -120,6 +122,7 @@ func TestTakeAppleCredentialsUnsetsEnvironment(t *testing.T) {
 		"APPLE_DISTRIBUTION_P12":          "cDEy",
 		"APPLE_DISTRIBUTION_P12_PASSWORD": " password ",
 		"APPLE_PROVISIONING_PROFILE":      "cHJvZmlsZQ==",
+		"APPLE_PROVISIONING_PROFILES":     "cHJvZmlsZXM=",
 		"APPLE_TEAM_ID":                   "TEAM123456",
 		"ASC_API_KEY_P8":                  "key",
 		"ASC_KEY_ID":                      "KEY1234567",
@@ -136,6 +139,127 @@ func TestTakeAppleCredentialsUnsetsEnvironment(t *testing.T) {
 		if value := os.Getenv(name); value != "" {
 			t.Fatalf("%s remained in environment", name)
 		}
+	}
+}
+
+func TestTakeAppleCredentialsAcceptsProfileBundleWithoutLegacyProfile(t *testing.T) {
+	values := map[string]string{
+		"APPLE_SIGNING_AGE_IDENTITY":      "AGE-SECRET-KEY-TEST",
+		"APPLE_DISTRIBUTION_P12":          "cDEy",
+		"APPLE_DISTRIBUTION_P12_PASSWORD": "password",
+		"APPLE_PROVISIONING_PROFILE":      "",
+		"APPLE_PROVISIONING_PROFILES":     "cHJvZmlsZXM=",
+		"APPLE_TEAM_ID":                   "TEAM123456",
+		"ASC_API_KEY_P8":                  "key",
+		"ASC_KEY_ID":                      "KEY1234567",
+		"ASC_ISSUER_ID":                   "",
+	}
+	for name, value := range values {
+		t.Setenv(name, value)
+	}
+	credentials, err := takeAppleCredentials()
+	if err != nil || credentials.profile != "" || credentials.profiles == "" {
+		t.Fatalf("takeAppleCredentials() = %#v, %v", credentials, err)
+	}
+}
+
+func TestMaterializeProvisioningProfilesSupportsLegacyAndBundle(t *testing.T) {
+	var archive bytes.Buffer
+	writer := zip.NewWriter(&archive)
+	for name, contents := range map[string]string{
+		"TripNearby.mobileprovision":     "trip profile",
+		"GravityKingdom.mobileprovision": "gravity profile",
+	} {
+		member, err := writer.Create(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := member.Write([]byte(contents)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	destination := t.TempDir()
+	paths, err := materializeProvisioningProfiles(
+		base64.StdEncoding.EncodeToString([]byte("legacy profile")),
+		base64.StdEncoding.EncodeToString(archive.Bytes()),
+		destination,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(paths) != 3 {
+		t.Fatalf("profile paths = %#v", paths)
+	}
+	for _, profilePath := range paths {
+		info, err := os.Stat(profilePath)
+		if err != nil {
+			t.Fatalf("stat profile %q: %v", profilePath, err)
+		}
+		if info.Mode().Perm() != 0600 {
+			t.Fatalf("profile %q mode = %v", profilePath, info.Mode())
+		}
+	}
+}
+
+func TestMaterializeProvisioningProfilesRejectsUnsafeBundleMember(t *testing.T) {
+	var archive bytes.Buffer
+	writer := zip.NewWriter(&archive)
+	member, err := writer.Create("profiles/App.mobileprovision")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := member.Write([]byte("profile")); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	_, err = materializeProvisioningProfiles("", base64.StdEncoding.EncodeToString(archive.Bytes()), t.TempDir())
+	if err == nil {
+		t.Fatal("nested profile bundle member was accepted")
+	}
+}
+
+func TestSelectProvisioningProfileUsesExactBundleAndNewestUsableProfile(t *testing.T) {
+	certificate := []byte("certificate DER")
+	fingerprint := sha1.Sum(certificate) // #nosec G401 -- mirrors Apple's certificate fingerprint.
+	identity := strings.ToUpper(hex.EncodeToString(fingerprint[:]))
+	profile := func(name, bundleID string, expires time.Time, certificate []byte) provisioningProfileCandidate {
+		return provisioningProfileCandidate{
+			path: name + ".mobileprovision",
+			profile: provisioningProfile{
+				UUID:                  name,
+				Name:                  name,
+				ExpirationDate:        expires,
+				Platform:              []string{"iOS"},
+				TeamIdentifier:        []string{"TEAM123456"},
+				DeveloperCertificates: [][]byte{certificate},
+				Entitlements: map[string]any{
+					"application-identifier": "TEAM123456." + bundleID,
+					"get-task-allow":         false,
+				},
+			},
+		}
+	}
+	now := time.Now()
+	candidates := []provisioningProfileCandidate{
+		profile("other-app", "com.example.other", now.Add(72*time.Hour), certificate),
+		profile("expired", "com.example.app", now.Add(-time.Hour), certificate),
+		profile("wrong-certificate", "com.example.app", now.Add(96*time.Hour), []byte("other")),
+		profile("selected", "com.example.app", now.Add(48*time.Hour), certificate),
+	}
+	selected, err := selectProvisioningProfile(candidates, "TEAM123456", "com.example.app", identity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if selected.profile.Name != "selected" {
+		t.Fatalf("selected profile = %q", selected.profile.Name)
+	}
+	if _, err := selectProvisioningProfile(candidates, "TEAM123456", "com.example.missing", identity); err == nil {
+		t.Fatal("missing Bundle ID unexpectedly selected a profile")
 	}
 }
 
