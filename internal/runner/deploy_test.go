@@ -410,6 +410,64 @@ func TestSetBundleBuildNumber(t *testing.T) {
 	}
 }
 
+func TestSetExportComplianceIfUnsetDeclaresNoNonExemptEncryption(t *testing.T) {
+	infoPath := filepath.Join(t.TempDir(), "Info.plist")
+	original, err := plist.Marshal(map[string]any{
+		"CFBundleIdentifier": "com.example.app",
+	}, plist.XMLFormat)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(infoPath, original, 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := setExportComplianceIfUnset(infoPath); err != nil {
+		t.Fatal(err)
+	}
+	updated, err := os.ReadFile(infoPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var values map[string]any
+	if _, err := plist.Unmarshal(updated, &values); err != nil {
+		t.Fatal(err)
+	}
+	if declared, ok := values["ITSAppUsesNonExemptEncryption"].(bool); !ok || declared {
+		t.Fatalf("ITSAppUsesNonExemptEncryption = %#v, want false", values["ITSAppUsesNonExemptEncryption"])
+	}
+}
+
+func TestSetExportComplianceIfUnsetRespectsExistingDeclaration(t *testing.T) {
+	infoPath := filepath.Join(t.TempDir(), "Info.plist")
+	original, err := plist.Marshal(map[string]any{
+		"CFBundleIdentifier":            "com.example.app",
+		"ITSAppUsesNonExemptEncryption": true,
+	}, plist.XMLFormat)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(infoPath, original, 0644); err != nil {
+		t.Fatal(err)
+	}
+	// A project that genuinely ships non-exempt cryptography must still
+	// answer Apple's compliance questionnaire itself; this must never
+	// silently flip an explicit true declaration to false.
+	if err := setExportComplianceIfUnset(infoPath); err != nil {
+		t.Fatal(err)
+	}
+	updated, err := os.ReadFile(infoPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var values map[string]any
+	if _, err := plist.Unmarshal(updated, &values); err != nil {
+		t.Fatal(err)
+	}
+	if declared, ok := values["ITSAppUsesNonExemptEncryption"].(bool); !ok || !declared {
+		t.Fatalf("ITSAppUsesNonExemptEncryption = %#v, want unchanged true", values["ITSAppUsesNonExemptEncryption"])
+	}
+}
+
 func TestTestFlightBuildNumberValidation(t *testing.T) {
 	root := t.TempDir()
 	for _, number := range []string{"", "0", "01", "1.", "1.a", "1.2.3.4"} {
