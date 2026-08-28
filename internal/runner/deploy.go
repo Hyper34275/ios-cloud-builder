@@ -190,6 +190,9 @@ func deployTestFlight(ctx context.Context, options *TestFlightOptions, credentia
 	if err := setBundleBuildNumber(filepath.Join(appPath, "Info.plist"), options.BuildNumber); err != nil {
 		return err
 	}
+	if err := setExportComplianceIfUnset(filepath.Join(appPath, "Info.plist")); err != nil {
+		return err
+	}
 	bundleID, err := readBundleID(filepath.Join(appPath, "Info.plist"))
 	if err != nil {
 		return err
@@ -509,6 +512,44 @@ func setBundleBuildNumber(infoPath, buildNumber string) error {
 	}
 	if err := os.WriteFile(infoPath, updated, info.Mode().Perm()); err != nil {
 		return fmt.Errorf("update application build number")
+	}
+	return nil
+}
+
+// setExportComplianceIfUnset declares that the application uses no encryption
+// beyond what App Store Connect exempts (standard HTTPS/TLS), unless the
+// project already set ITSAppUsesNonExemptEncryption itself. Without either an
+// explicit declaration or this key, Apple asks the export-compliance
+// questionnaire on every single TestFlight build and blocks external testers
+// until a human answers it in App Store Connect; almost every app that only
+// talks to its backend over HTTPS qualifies for the exemption. A project that
+// genuinely ships non-exempt cryptography must still declare that itself.
+func setExportComplianceIfUnset(infoPath string) error {
+	info, err := os.Lstat(infoPath)
+	if err != nil || !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 || info.Size() > 4*1024*1024 {
+		return fmt.Errorf("inspect application Info.plist")
+	}
+	data, err := os.ReadFile(infoPath)
+	if err != nil {
+		return fmt.Errorf("read application Info.plist")
+	}
+	var values map[string]any
+	if _, err := plist.Unmarshal(data, &values); err != nil {
+		return fmt.Errorf("parse application Info.plist")
+	}
+	if values == nil {
+		return fmt.Errorf("parse application Info.plist")
+	}
+	if _, declared := values["ITSAppUsesNonExemptEncryption"]; declared {
+		return nil
+	}
+	values["ITSAppUsesNonExemptEncryption"] = false
+	updated, err := plist.Marshal(values, plist.BinaryFormat)
+	if err != nil {
+		return fmt.Errorf("update application export compliance declaration")
+	}
+	if err := os.WriteFile(infoPath, updated, info.Mode().Perm()); err != nil {
+		return fmt.Errorf("update application export compliance declaration")
 	}
 	return nil
 }
