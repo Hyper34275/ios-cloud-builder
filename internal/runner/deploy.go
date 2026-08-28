@@ -142,8 +142,8 @@ func takeAppleCredentials() (*appleCredentials, error) {
 		issuerID:    take("ASC_ISSUER_ID"),
 	}
 	if credentials.ageIdentity == "" || credentials.p12 == "" || credentials.p12Password == "" ||
-		(credentials.profile == "" && credentials.profiles == "") || credentials.teamID == "" || credentials.apiKey == "" ||
-		credentials.apiKeyID == "" {
+		(credentials.profile == "" && credentials.profiles == "" && credentials.issuerID == "") || credentials.teamID == "" ||
+		credentials.apiKey == "" || credentials.apiKeyID == "" {
 		return nil, fmt.Errorf("protected Apple environment is incomplete")
 	}
 	if !appleIDPattern.MatchString(credentials.teamID) || !appleIDPattern.MatchString(credentials.apiKeyID) ||
@@ -249,21 +249,68 @@ func deployTestFlight(ctx context.Context, options *TestFlightOptions, credentia
 	}
 	identityFingerprint, signingIdentity := identityMatch[1], identityMatch[2]
 
-	candidates := make([]provisioningProfileCandidate, 0, len(profilePaths))
-	for _, candidatePath := range profilePaths {
+	// A profile stashed in APPLE_PROVISIONING_PROFILE(S) is a manual, write-only
+	// secret that has to be re-uploaded whenever a project's bundle identifier
+	// changes. When an App Store Connect issuer ID is configured, discover or
+	// create a matching profile through the API instead, so a new bundle
+	// identifier never needs a person to touch these secrets by hand.
+	var publisher *appStoreConnectClient
+	var bundleResourceID string
+	if credentials.issuerID != "" {
+		publisher, err = newAppStoreConnectClient(credentials.apiKeyID, credentials.issuerID, credentials.apiKey)
+		if err != nil {
+			return err
+		}
+		var downloaded []string
+		bundleResourceID, downloaded, err = downloadASCProvisioningProfiles(ctx, publisher, bundleID, secretsDir)
+		if err != nil {
+			if len(profilePaths) == 0 {
+				return err
+			}
+			_, _ = fmt.Fprintf(privateLog, "App Store Connect profile discovery failed: %v\nTrying protected fallback profiles.\n", err)
+		} else {
+			profilePaths = append(profilePaths, downloaded...)
+		}
+	}
+
+	parseCandidate := func(candidatePath string) (provisioningProfileCandidate, error) {
 		profileOutput, captureErr := run.capture(workRoot, "/usr/bin/security", "cms", "-D", "-i", candidatePath, "-k", keychainPath)
 		if captureErr != nil {
-			return captureErr
+			return provisioningProfileCandidate{}, captureErr
 		}
 		var candidate provisioningProfile
 		if _, unmarshalErr := plist.Unmarshal(profileOutput, &candidate); unmarshalErr != nil {
-			return fmt.Errorf("parse provisioning profile bundle")
+			return provisioningProfileCandidate{}, fmt.Errorf("parse provisioning profile bundle")
 		}
-		candidates = append(candidates, provisioningProfileCandidate{path: candidatePath, profile: candidate})
+		return provisioningProfileCandidate{path: candidatePath, profile: candidate}, nil
 	}
-	selected, err := selectProvisioningProfile(candidates, credentials.teamID, bundleID, identityFingerprint)
-	if err != nil {
-		return err
+
+	candidates := make([]provisioningProfileCandidate, 0, len(profilePaths))
+	for _, candidatePath := range profilePaths {
+		candidate, parseErr := parseCandidate(candidatePath)
+		if parseErr != nil {
+			return parseErr
+		}
+		candidates = append(candidates, candidate)
+	}
+	selected, selectErr := selectProvisioningProfile(candidates, credentials.teamID, bundleID, identityFingerprint)
+	if selectErr != nil && publisher != nil && bundleResourceID != "" {
+		createdPath, createErr := createASCProvisioningProfile(ctx, publisher, bundleResourceID, bundleID, identityFingerprint, secretsDir)
+		if createErr != nil {
+			return createErr
+		}
+		created, parseErr := parseCandidate(createdPath)
+		if parseErr != nil {
+			return parseErr
+		}
+		candidates = append(candidates, created)
+		selected, selectErr = selectProvisioningProfile(candidates, credentials.teamID, bundleID, identityFingerprint)
+		if selectErr == nil {
+			_, _ = fmt.Fprintln(privateLog, "Created an App Store provisioning profile through the App Store Connect API.")
+		}
+	}
+	if selectErr != nil {
+		return selectErr
 	}
 	profilePath, profile := selected.path, selected.profile
 	installedProfile := filepath.Join(privateHome, "Library", "MobileDevice", "Provisioning Profiles", profile.UUID+".mobileprovision")

@@ -164,6 +164,50 @@ func TestTakeAppleCredentialsAcceptsProfileBundleWithoutLegacyProfile(t *testing
 	}
 }
 
+func TestTakeAppleCredentialsAcceptsIssuerIDWithoutAnyStoredProfile(t *testing.T) {
+	values := map[string]string{
+		"APPLE_SIGNING_AGE_IDENTITY":      "AGE-SECRET-KEY-TEST",
+		"APPLE_DISTRIBUTION_P12":          "cDEy",
+		"APPLE_DISTRIBUTION_P12_PASSWORD": "password",
+		"APPLE_PROVISIONING_PROFILE":      "",
+		"APPLE_PROVISIONING_PROFILES":     "",
+		"APPLE_TEAM_ID":                   "TEAM123456",
+		"ASC_API_KEY_P8":                  "key",
+		"ASC_KEY_ID":                      "KEY1234567",
+		"ASC_ISSUER_ID":                   "00000000-0000-0000-0000-000000000000",
+	}
+	for name, value := range values {
+		t.Setenv(name, value)
+	}
+	// A new bundle identifier has no provisioning profile stored anywhere yet;
+	// the App Store Connect issuer ID alone must be enough to attempt
+	// discovering or creating one instead of failing before the deploy tries.
+	credentials, err := takeAppleCredentials()
+	if err != nil || credentials.profile != "" || credentials.profiles != "" || credentials.issuerID == "" {
+		t.Fatalf("takeAppleCredentials() = %#v, %v", credentials, err)
+	}
+}
+
+func TestTakeAppleCredentialsRejectsNoProfileAndNoIssuer(t *testing.T) {
+	values := map[string]string{
+		"APPLE_SIGNING_AGE_IDENTITY":      "AGE-SECRET-KEY-TEST",
+		"APPLE_DISTRIBUTION_P12":          "cDEy",
+		"APPLE_DISTRIBUTION_P12_PASSWORD": "password",
+		"APPLE_PROVISIONING_PROFILE":      "",
+		"APPLE_PROVISIONING_PROFILES":     "",
+		"APPLE_TEAM_ID":                   "TEAM123456",
+		"ASC_API_KEY_P8":                  "key",
+		"ASC_KEY_ID":                      "KEY1234567",
+		"ASC_ISSUER_ID":                   "",
+	}
+	for name, value := range values {
+		t.Setenv(name, value)
+	}
+	if _, err := takeAppleCredentials(); err == nil {
+		t.Fatal("takeAppleCredentials() accepted no profile source and no issuer ID")
+	}
+}
+
 func TestMaterializeProvisioningProfilesSupportsLegacyAndBundle(t *testing.T) {
 	var archive bytes.Buffer
 	writer := zip.NewWriter(&archive)
