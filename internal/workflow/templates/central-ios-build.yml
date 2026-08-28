@@ -72,6 +72,8 @@ jobs:
   build:
     runs-on: macos-15
     timeout-minutes: 45
+    outputs:
+      build_number: ${{ steps.build-number.outputs.build_number }}
     env:
       DEVELOPER_DIR: /Applications/Xcode_26.3.app/Contents/Developer
 
@@ -143,6 +145,23 @@ jobs:
           submodules: false
           lfs: false
 
+      - name: Derive TestFlight build number from snapshot history
+        id: build-number
+        env:
+          SOURCE_TOKEN: ${{ steps.source-token.outputs.token }}
+        run: |
+          set -euo pipefail
+          HEADER=$(printf 'x-access-token:%s' "$SOURCE_TOKEN" | base64 | tr -d '\n')
+          git -C "$GITHUB_WORKSPACE/source" \
+            -c "http.extraheader=AUTHORIZATION: basic $HEADER" \
+            fetch --quiet --unshallow --no-tags origin
+          COUNT=$(git -C "$GITHUB_WORKSPACE/source" rev-list --count HEAD)
+          case "$COUNT" in
+            ''|*[!0-9]*) echo "error: unusable commit count: $COUNT" >&2; exit 1 ;;
+          esac
+          echo "build_number=$COUNT" >> "$GITHUB_OUTPUT"
+          echo "TestFlight build number: $COUNT"
+
       - name: Revoke private repository token before project code
         if: always() && steps.source-token.outcome == 'success'
         env:
@@ -158,10 +177,12 @@ jobs:
         id: detect
         env:
           FRAMEWORK_HINT: ${{ inputs.framework_hint }}
+          IOS_PATH: ${{ inputs.ios_path }}
         run: |
           echo "Preparing framework toolchain"
           "$RUNNER_TEMP/builder-runner" detect \
             --source "$GITHUB_WORKSPACE/source" \
+            --ios-path "$IOS_PATH" \
             --framework "$FRAMEWORK_HINT" >> "$GITHUB_OUTPUT"
 
       - name: Set up Node.js
@@ -287,7 +308,7 @@ jobs:
           ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
           ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
           ARTIFACT_RECIPIENT: ${{ inputs.artifact_recipient }}
-          TESTFLIGHT_BUILD_NUMBER: ${{ github.run_number }}.${{ github.run_attempt }}
+          TESTFLIGHT_BUILD_NUMBER: ${{ needs.build.outputs.build_number }}.${{ github.run_attempt }}
         run: |
           "$RUNNER_TEMP/builder-runner" deploy-testflight \
             --encrypted-ipa "$RUNNER_TEMP/intermediate/App.ipa.age" \

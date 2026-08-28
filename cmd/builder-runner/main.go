@@ -108,13 +108,14 @@ func revokeToken() error {
 
 func detect(args []string) error {
 	flags := newFlags("detect")
-	var source, hint string
+	var source, iosPath, hint string
 	flags.StringVar(&source, "source", "", "")
+	flags.StringVar(&iosPath, "ios-path", "", "")
 	flags.StringVar(&hint, "framework", "", "")
 	if err := flags.Parse(args); err != nil || flags.NArg() != 0 || !filepath.IsAbs(source) {
 		return fmt.Errorf("invalid framework detection arguments")
 	}
-	framework, err := runner.DetectFramework(source, hint)
+	framework, err := runner.DetectFramework(source, iosPath, hint)
 	if err != nil {
 		return fmt.Errorf("framework detection failed")
 	}

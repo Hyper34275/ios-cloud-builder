@@ -114,11 +114,67 @@ func TestDetectFramework(t *testing.T) {
 			if err := os.WriteFile(path, []byte(test.content), 0600); err != nil {
 				t.Fatal(err)
 			}
-			got, err := DetectFramework(root, FrameworkAuto)
+			got, err := DetectFramework(root, "", FrameworkAuto)
 			if err != nil || got != test.want {
 				t.Fatalf("DetectFramework() = %q, %v; want %q", got, err, test.want)
 			}
 		})
+	}
+}
+
+func TestDetectNestedFlutterProject(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "app", "ios"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "app", "pubspec.yaml"), []byte("name: app"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	// Without the iOS path there is no pubspec.yaml to find, so a monorepo
+	// would build as a bare Xcode project and fail on the generated config.
+	if got, err := DetectFramework(root, "", FrameworkAuto); err != nil || got != FrameworkNative {
+		t.Fatalf("DetectFramework(root, \"\") = %q, %v; want %q", got, err, FrameworkNative)
+	}
+	if got, err := DetectFramework(root, filepath.Join("app", "ios"), FrameworkAuto); err != nil || got != FrameworkFlutter {
+		t.Fatalf("DetectFramework(root, app/ios) = %q, %v; want %q", got, err, FrameworkFlutter)
+	}
+}
+
+func TestFlutterProjectRoot(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "app", "ios"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "app", "pubspec.yaml"), []byte("name: app"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	got, err := FlutterProjectRoot(root, filepath.Join("app", "ios"))
+	if err != nil || got != filepath.Join(root, "app") {
+		t.Fatalf("FlutterProjectRoot(app/ios) = %q, %v; want %q", got, err, filepath.Join(root, "app"))
+	}
+
+	// A path pointing outside the checkout must never become a build root.
+	if _, err := FlutterProjectRoot(root, filepath.Join("..", "elsewhere")); err == nil {
+		t.Fatal("FlutterProjectRoot accepted a path outside the checkout")
+	}
+
+	// The conventional single-application layout keeps resolving to the root.
+	conventional := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(conventional, "ios"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(conventional, "pubspec.yaml"), []byte("name: app"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	for _, iosPath := range []string{"ios", ""} {
+		got, err := FlutterProjectRoot(conventional, iosPath)
+		if err != nil || got != conventional {
+			t.Fatalf("FlutterProjectRoot(%q) = %q, %v; want %q", iosPath, got, err, conventional)
+		}
+	}
+
+	if _, err := FlutterProjectRoot(t.TempDir(), "ios"); err == nil {
+		t.Fatal("FlutterProjectRoot accepted a project with no pubspec.yaml")
 	}
 }
 

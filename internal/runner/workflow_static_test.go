@@ -92,7 +92,7 @@ func TestCentralWorkflowSecurityProperties(t *testing.T) {
 		"go mod verify",
 		"operation:", "environment: apple-production", "APPLE_SIGNING_RECIPIENT",
 		"APPLE_SIGNING_AGE_IDENTITY", "APPLE_DISTRIBUTION_P12", "APPLE_PROVISIONING_PROFILE", "APPLE_PROVISIONING_PROFILES",
-		"ASC_API_KEY_P8", "deploy-testflight", "--build-number", "github.run_number", "github.run_attempt", "ios-builder-deploy-${{ inputs.build_id }}",
+		"ASC_API_KEY_P8", "deploy-testflight", "--build-number", "needs.build.outputs.build_number", "github.run_attempt", "ios-builder-deploy-${{ inputs.build_id }}",
 	} {
 		if !strings.Contains(text, required) {
 			t.Errorf("central workflow missing %q", required)
