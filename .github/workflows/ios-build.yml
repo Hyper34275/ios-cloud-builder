@@ -177,10 +177,12 @@ jobs:
         id: detect
         env:
           FRAMEWORK_HINT: ${{ inputs.framework_hint }}
+          IOS_PATH: ${{ inputs.ios_path }}
         run: |
           echo "Preparing framework toolchain"
           "$RUNNER_TEMP/builder-runner" detect \
             --source "$GITHUB_WORKSPACE/source" \
+            --ios-path "$IOS_PATH" \
             --framework "$FRAMEWORK_HINT" >> "$GITHUB_OUTPUT"
 
       - name: Set up Node.js

@@ -2,20 +2,25 @@ package runner
 
 import (
 	"bytes"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 )
 
+var errNoFlutterProject = errors.New("no pubspec.yaml beside the iOS project or at the checkout root")
+
 // DetectFramework inspects manifests without executing private project code.
-func DetectFramework(sourceRoot, hint string) (string, error) {
+// iosPath is the checkout-relative iOS project directory, which locates a
+// Flutter application that does not sit at the checkout root.
+func DetectFramework(sourceRoot, iosPath, hint string) (string, error) {
 	if !validFramework(hint) {
 		return "", os.ErrInvalid
 	}
 	if hint != FrameworkAuto {
 		return hint, nil
 	}
-	if exists(filepath.Join(sourceRoot, "pubspec.yaml")) {
+	if _, err := FlutterProjectRoot(sourceRoot, iosPath); err == nil {
 		return FrameworkFlutter, nil
 	}
 	pkg, _ := os.ReadFile(filepath.Join(sourceRoot, "package.json"))
@@ -60,4 +65,29 @@ func DetectFramework(sourceRoot, hint string) (string, error) {
 func exists(path string) bool {
 	_, err := os.Stat(path)
 	return err == nil
+}
+
+// FlutterProjectRoot resolves the directory holding pubspec.yaml, which is
+// where every flutter command has to run and where it writes build/. Flutter
+// generates its iOS project as <root>/ios, so the parent of the iOS path is
+// the project root whenever a repository nests the application in a
+// subdirectory. A conventional single-application repository keeps pubspec.yaml
+// at the checkout root, where the parent of <root>/ios also lands, so both
+// layouts resolve through the same rule.
+//
+// iosPath is relative to sourceRoot and may be empty. A candidate outside the
+// checkout is ignored rather than rejected, so a malformed path can never
+// direct a build at a directory the snapshot does not contain.
+func FlutterProjectRoot(sourceRoot, iosPath string) (string, error) {
+	candidates := make([]string, 0, 2)
+	if iosPath != "" {
+		candidates = append(candidates, filepath.Dir(filepath.Join(sourceRoot, iosPath)))
+	}
+	candidates = append(candidates, sourceRoot)
+	for _, candidate := range candidates {
+		if pathWithin(sourceRoot, candidate) && exists(filepath.Join(candidate, "pubspec.yaml")) {
+			return candidate, nil
+		}
+	}
+	return "", errNoFlutterProject
 }

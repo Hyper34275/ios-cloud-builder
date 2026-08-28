@@ -194,17 +194,24 @@ func buildUnsigned(ctx context.Context, options *BuildOptions, privateLog io.Wri
 
 	var appPath string
 	if options.Framework == FrameworkFlutter {
-		if err := run.run(sourceRoot, "flutter", "pub", "get"); err != nil {
+		// Every flutter command resolves its project from the working
+		// directory, and writes build/ there. Running them at the checkout
+		// root only works when the application is the whole repository.
+		flutterRoot, rootErr := FlutterProjectRoot(sourceRoot, options.IOSPath)
+		if rootErr != nil {
+			return rootErr
+		}
+		if err := run.run(flutterRoot, "flutter", "pub", "get"); err != nil {
 			return err
 		}
 		mode := "--release"
 		if options.Configuration == "Debug" {
 			mode = "--debug"
 		}
-		if err := run.run(sourceRoot, "flutter", "build", "ios", mode, "--no-codesign"); err != nil {
+		if err := run.run(flutterRoot, "flutter", "build", "ios", mode, "--no-codesign"); err != nil {
 			return err
 		}
-		appPath, err = findApp(filepath.Join(sourceRoot, "build", "ios", "iphoneos"))
+		appPath, err = findApp(filepath.Join(flutterRoot, "build", "ios", "iphoneos"))
 	} else {
 		if options.Framework == FrameworkKMP {
 			if err := makeGradleWrapperExecutable(sourceRoot); err != nil {
