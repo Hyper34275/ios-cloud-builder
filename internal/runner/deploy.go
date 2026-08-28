@@ -581,8 +581,8 @@ func materializeProvisioningProfiles(singleProfile, profileBundle, destinationDi
 
 func selectProvisioningProfile(candidates []provisioningProfileCandidate, teamID, bundleID, identityFingerprint string) (provisioningProfileCandidate, error) {
 	var matching []provisioningProfileCandidate
-	for _, candidate := range candidates {
-		profile := candidate.profile
+	for i := range candidates {
+		profile := &candidates[i].profile
 		if profile.UUID == "" || profile.Name == "" || len(profile.TeamIdentifier) != 1 || profile.TeamIdentifier[0] != teamID {
 			return provisioningProfileCandidate{}, fmt.Errorf("provisioning profile bundle does not match APPLE_TEAM_ID")
 		}
@@ -591,7 +591,7 @@ func selectProvisioningProfile(candidates []provisioningProfileCandidate, teamID
 			return provisioningProfileCandidate{}, fmt.Errorf("provisioning profile bundle has no application identifier")
 		}
 		if profileMatchesBundle(applicationID, teamID, bundleID) {
-			matching = append(matching, candidate)
+			matching = append(matching, candidates[i])
 		}
 	}
 	if len(matching) == 0 {
@@ -600,10 +600,11 @@ func selectProvisioningProfile(candidates []provisioningProfileCandidate, teamID
 	sort.SliceStable(matching, func(i, j int) bool {
 		return matching[i].profile.ExpirationDate.After(matching[j].profile.ExpirationDate)
 	})
-	for _, candidate := range matching {
+	for i := range matching {
+		candidate := &matching[i]
 		if validateAppStoreProfile(&candidate.profile) == nil &&
 			profileAuthorizesIdentity(candidate.profile.DeveloperCertificates, identityFingerprint) {
-			return candidate, nil
+			return *candidate, nil
 		}
 	}
 	return provisioningProfileCandidate{}, fmt.Errorf("no current matching provisioning profile authorizes the distribution certificate")
