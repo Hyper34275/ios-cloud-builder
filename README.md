@@ -273,7 +273,7 @@ Store Connect before uploading it.
 - Cordova/Ionic generated iOS projects
 - XcodeGen manifests
 
-Schemes and workspaces/projects are detected where possible. The source build always passes `CODE_SIGNING_ALLOWED=NO` and packages the device `.app` as an unsigned IPA. In TestFlight mode, the separate protected job manually signs that app with the matching App Store provisioning profile from the protected multi-application bundle. Apps containing extensions, Watch apps, XPC services, or other embedded applications require nested-bundle signing support and are rejected rather than partially signed.
+Schemes and workspaces/projects are detected where possible. The source build always passes `CODE_SIGNING_ALLOWED=NO` and packages the device `.app` as an unsigned IPA. In TestFlight mode, the separate protected job manually signs that app with the matching App Store provisioning profile from the protected multi-application bundle. App extensions in the app's `PlugIns` directory (widgets, Live Activities, share and notification extensions) are signed too, each with its own App Store profile, discovered or created through App Store Connect exactly like the app's, before the app itself; an extension's Bundle ID must extend the app's, and its build number is set to the app's. Watch apps, App Clips, XPC services, ExtensionKit extensions, and bundles nested inside an extension still require provisioning this job does not perform and are rejected rather than partially signed.
 
 ## Repository backend and retained commands
 
@@ -333,7 +333,7 @@ go build ./cmd/builder-runner
 - Repository/source names and workflow inputs are public metadata even though source contents and outputs are encrypted.
 - A malicious project or dependency runs as the runner user and is not strongly sandboxed.
 - The central hosted-runner design has the policy caveat described in [COMPLIANCE.md](COMPLIANCE.md).
-- Central TestFlight supports multiple top-level applications by exact Bundle ID, but still rejects embedded app extensions, Watch apps, App Clips, and XPC services that require nested-bundle signing and additional profiles.
+- Central TestFlight supports multiple top-level applications by exact Bundle ID and signs their `PlugIns` app extensions, but still rejects Watch apps, App Clips, XPC services, ExtensionKit extensions, and bundles nested inside an extension.
 - A successful upload means App Store Connect accepted the binary; it does not mean Apple's asynchronous processing or review has completed.
 - Private GitHub SSH aliases are rejected in central mode because the CLI cannot prove an alias resolves to GitHub; use an explicit `git@github.com:OWNER/REPO.git` or `https://github.com/OWNER/REPO.git` remote.
 - Failed artifact deletion is non-fatal; ciphertext expires after one day.

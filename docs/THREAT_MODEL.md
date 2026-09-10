@@ -47,8 +47,12 @@ AGE protects artifact confidentiality and integrity after encryption. It does no
 In TestFlight mode the unsigned IPA is encrypted to a separate transport
 recipient whose identity is available only inside `apple-production`. The
 protected job downloads that ciphertext, rejects traversal, symlinks, special
-files, multiple apps, and embedded applications requiring extra profiles. It
-sets a GitHub-run-derived `CFBundleVersion`, signs without executing the app,
+files, multiple apps, and embedded applications other than `PlugIns` app
+extensions. Each extension's Bundle ID must extend the app's, which also keeps a
+project from steering the job into registering or provisioning an arbitrary
+identifier; at most 16 are accepted. It sets a GitHub-run-derived
+`CFBundleVersion` on the app and every extension, signs each extension with its
+own App Store profile and then the app, without executing either,
 validates the signed IPA with App Store Connect, and uploads it directly to Apple
 before deleting it with the ephemeral runner; only an AGE-encrypted diagnostic log is
 uploaded to GitHub.
@@ -84,6 +88,6 @@ Public workflow metadata/inputs can expose source owner/repository names, iOS pa
 
 - Protecting source from GitHub's runner/control plane.
 - Safely building intentionally malicious private projects in a strong sandbox.
-- Automatic provisioning and multi-profile signing for extensions, Watch apps, App Clips, or XPC services.
+- Automatic provisioning and multi-profile signing for Watch apps, App Clips, XPC services, or ExtensionKit extensions.
 - Hiding Apple credentials from GitHub's protected signing runner/control plane.
 - Guaranteeing GitHub policy approval; see [COMPLIANCE.md](../COMPLIANCE.md).

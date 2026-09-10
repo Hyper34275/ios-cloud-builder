@@ -7,9 +7,11 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -492,19 +494,138 @@ func TestTestFlightBuildNumberValidation(t *testing.T) {
 	}
 }
 
-func TestRejectNestedApplicationsFailClosed(t *testing.T) {
+func TestDiscoverAppExtensionsFindsPlugInsExtensions(t *testing.T) {
+	app := filepath.Join(t.TempDir(), "App.app")
 	for _, relative := range []string{
-		"PlugIns/Share.appex", "Watch", "AppClips", "XPCServices/Service.xpc", "Nested.App",
+		"PlugIns/Widget.appex/Assets", "PlugIns/Share.appex", "Frameworks/Kit.framework",
+	} {
+		if err := os.MkdirAll(filepath.Join(app, relative), 0700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	extensions, err := discoverAppExtensions(app)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var names []string
+	for _, extension := range extensions {
+		names = append(names, filepath.Base(extension))
+	}
+	sort.Strings(names)
+	if strings.Join(names, ",") != "Share.appex,Widget.appex" {
+		t.Fatalf("extensions = %#v", names)
+	}
+
+	plain := filepath.Join(t.TempDir(), "Plain.app")
+	if err := os.MkdirAll(filepath.Join(plain, "Frameworks"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if extensions, err := discoverAppExtensions(plain); err != nil || len(extensions) != 0 {
+		t.Fatalf("plain application = %#v, %v", extensions, err)
+	}
+}
+
+func TestDiscoverAppExtensionsStillFailsClosedOnEverythingElse(t *testing.T) {
+	for _, relative := range []string{
+		"Watch", "AppClips", "XPCServices/Service.xpc", "Nested.App",
+		"Extensions/Kit.appex",                     // ExtensionKit, not PlugIns
+		"Frameworks/Share.appex",                   // an extension outside PlugIns
+		"PlugIns/Widget.appex/PlugIns/Inner.appex", // nested inside an extension
+		"PlugIns/Widget.appex/Watch",               // same, another bundle type
+		"PlugIns/NotAnExtension",                   // PlugIns holds extensions only
+		"Resources/PlugIns",                        // a second PlugIns elsewhere
 	} {
 		t.Run(relative, func(t *testing.T) {
 			app := filepath.Join(t.TempDir(), "App.app")
 			if err := os.MkdirAll(filepath.Join(app, relative), 0700); err != nil {
 				t.Fatal(err)
 			}
-			if err := rejectNestedApplications(app); err == nil {
+			if _, err := discoverAppExtensions(app); err == nil {
 				t.Fatalf("nested bundle %q was accepted", relative)
 			}
 		})
+	}
+}
+
+func TestDiscoverAppExtensionsIsBounded(t *testing.T) {
+	app := filepath.Join(t.TempDir(), "App.app")
+	for index := 0; index <= maxAppExtensions; index++ {
+		if err := os.MkdirAll(filepath.Join(app, "PlugIns", fmt.Sprintf("E%02d.appex", index)), 0700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := discoverAppExtensions(app); err == nil {
+		t.Fatal("more extensions than the limit were accepted")
+	}
+}
+
+func TestReadExtensionBundleIDMustExtendTheApplication(t *testing.T) {
+	write := func(bundleID string) string {
+		t.Helper()
+		extension := filepath.Join(t.TempDir(), "Widget.appex")
+		info, err := plist.Marshal(map[string]any{"CFBundleIdentifier": bundleID}, plist.XMLFormat)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.MkdirAll(extension, 0700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(extension, "Info.plist"), info, 0600); err != nil {
+			t.Fatal(err)
+		}
+		return extension
+	}
+	for _, accepted := range []string{"com.example.app.widget", "com.example.app.Live-Activity"} {
+		if got, err := readExtensionBundleID(write(accepted), "com.example.app"); err != nil || got != accepted {
+			t.Fatalf("%q = %q, %v", accepted, got, err)
+		}
+	}
+	for _, rejected := range []string{
+		"com.example.app",       // the application itself
+		"com.example.appwidget", // shares a prefix, is not a child
+		"com.example.other",     // unrelated identifier
+		"com.example.app.",      // empty child
+		"com.example.app..x",    // empty component
+		"com.example.app.x y",   // outside the identifier alphabet
+	} {
+		if _, err := readExtensionBundleID(write(rejected), "com.example.app"); err == nil {
+			t.Fatalf("extension identifier %q was accepted", rejected)
+		}
+	}
+}
+
+func TestNestedCodeLeavesExtensionsToTheirOwnSigning(t *testing.T) {
+	app := filepath.Join(t.TempDir(), "App.app")
+	for _, relative := range []string{
+		"Frameworks/Kit.framework/Versions", "PlugIns/Widget.appex/Frameworks/Inner.framework",
+	} {
+		if err := os.MkdirAll(filepath.Join(app, relative), 0700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(app, "Frameworks", "libswift.dylib"), []byte("x"), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	applicationCode, err := nestedCode(app, filepath.Join(app, "PlugIns"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, code := range applicationCode {
+		if strings.Contains(code, "PlugIns") {
+			t.Fatalf("application re-signed extension code %q", code)
+		}
+	}
+	if len(applicationCode) != 2 {
+		t.Fatalf("application nested code = %#v", applicationCode)
+	}
+
+	extensionCode, err := nestedCode(filepath.Join(app, "PlugIns", "Widget.appex"), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(extensionCode) != 1 || filepath.Base(extensionCode[0]) != "Inner.framework" {
+		t.Fatalf("extension nested code = %#v", extensionCode)
 	}
 }
 
