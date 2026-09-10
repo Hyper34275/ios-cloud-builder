@@ -30,6 +30,7 @@ const (
 	maxSecretBytes    = 2 * 1024 * 1024
 	maxProfiles       = 100
 	maxProfileBytes   = 512 * 1024
+	maxAppExtensions  = 16
 )
 
 var (
@@ -75,6 +76,20 @@ type provisioningProfile struct {
 type provisioningProfileCandidate struct {
 	path    string
 	profile provisioningProfile
+}
+
+// appExtension is one app extension bundle from the application's PlugIns
+// directory. Each is its own App ID, so it is provisioned and signed with its
+// own App Store profile before the application that contains it.
+type appExtension struct {
+	path     string
+	bundleID string
+}
+
+// signingTarget is one bundle and the entitlements it is signed with.
+type signingTarget struct {
+	path             string
+	entitlementsPath string
 }
 
 // ExecuteTestFlight decrypts an authenticated unsigned IPA, signs it without
@@ -184,7 +199,8 @@ func deployTestFlight(ctx context.Context, options *TestFlightOptions, credentia
 	if err != nil {
 		return err
 	}
-	if err := rejectNestedApplications(appPath); err != nil {
+	extensionPaths, err := discoverAppExtensions(appPath)
+	if err != nil {
 		return err
 	}
 	if err := setBundleBuildNumber(filepath.Join(appPath, "Info.plist"), options.BuildNumber); err != nil {
@@ -196,6 +212,24 @@ func deployTestFlight(ctx context.Context, options *TestFlightOptions, credentia
 	bundleID, err := readBundleID(filepath.Join(appPath, "Info.plist"))
 	if err != nil {
 		return err
+	}
+	extensions := make([]appExtension, 0, len(extensionPaths))
+	seenBundleIDs := map[string]bool{bundleID: true}
+	for _, extensionPath := range extensionPaths {
+		extensionID, idErr := readExtensionBundleID(extensionPath, bundleID)
+		if idErr != nil {
+			return idErr
+		}
+		if seenBundleIDs[extensionID] {
+			return fmt.Errorf("app extension bundle identifiers must be unique")
+		}
+		seenBundleIDs[extensionID] = true
+		// App Store Connect refuses an extension whose build number differs
+		// from its application's, and the application's was just replaced.
+		if err := setBundleBuildNumber(filepath.Join(extensionPath, "Info.plist"), options.BuildNumber); err != nil {
+			return err
+		}
+		extensions = append(extensions, appExtension{path: extensionPath, bundleID: extensionID})
 	}
 
 	secretsDir := filepath.Join(workRoot, "credentials")
@@ -258,21 +292,10 @@ func deployTestFlight(ctx context.Context, options *TestFlightOptions, credentia
 	// create a matching profile through the API instead, so a new bundle
 	// identifier never needs a person to touch these secrets by hand.
 	var publisher *appStoreConnectClient
-	var bundleResourceID string
 	if credentials.issuerID != "" {
 		publisher, err = newAppStoreConnectClient(credentials.apiKeyID, credentials.issuerID, credentials.apiKey)
 		if err != nil {
 			return err
-		}
-		var downloaded []string
-		bundleResourceID, downloaded, err = downloadASCProvisioningProfiles(ctx, publisher, bundleID, secretsDir)
-		if err != nil {
-			if len(profilePaths) == 0 {
-				return err
-			}
-			_, _ = fmt.Fprintf(privateLog, "App Store Connect profile discovery failed: %v\nTrying protected fallback profiles.\n", err)
-		} else {
-			profilePaths = append(profilePaths, downloaded...)
 		}
 	}
 
@@ -288,47 +311,104 @@ func deployTestFlight(ctx context.Context, options *TestFlightOptions, credentia
 		return provisioningProfileCandidate{path: candidatePath, profile: candidate}, nil
 	}
 
-	candidates := make([]provisioningProfileCandidate, 0, len(profilePaths))
+	stored := make([]provisioningProfileCandidate, 0, len(profilePaths))
 	for _, candidatePath := range profilePaths {
 		candidate, parseErr := parseCandidate(candidatePath)
 		if parseErr != nil {
 			return parseErr
 		}
-		candidates = append(candidates, candidate)
+		stored = append(stored, candidate)
 	}
-	selected, selectErr := selectProvisioningProfile(candidates, credentials.teamID, bundleID, identityFingerprint)
-	if selectErr != nil && publisher != nil && bundleResourceID != "" {
-		createdPath, createErr := createASCProvisioningProfile(ctx, publisher, bundleResourceID, bundleID, identityFingerprint, secretsDir)
-		if createErr != nil {
-			return createErr
+
+	// Resolves the profile for one bundle identifier: the protected stored
+	// profiles plus whatever App Store Connect already holds for it, creating
+	// one only when none of those authorizes the imported certificate. Each
+	// bundle downloads into its own directory, because the API file names
+	// repeat from one identifier to the next.
+	resolveProfile := func(identifier, destinationDir string) (provisioningProfileCandidate, error) {
+		candidates := append([]provisioningProfileCandidate(nil), stored...)
+		var bundleResourceID string
+		if publisher != nil {
+			if err := os.Mkdir(destinationDir, 0700); err != nil {
+				return provisioningProfileCandidate{}, fmt.Errorf("prepare provisioning profile workspace")
+			}
+			resourceID, downloaded, discoverErr := downloadASCProvisioningProfiles(ctx, publisher, identifier, destinationDir)
+			if discoverErr != nil {
+				if len(stored) == 0 {
+					return provisioningProfileCandidate{}, discoverErr
+				}
+				_, _ = fmt.Fprintf(privateLog, "App Store Connect profile discovery for %s failed: %v\nTrying protected fallback profiles.\n", identifier, discoverErr)
+			} else {
+				bundleResourceID = resourceID
+				for _, candidatePath := range downloaded {
+					candidate, parseErr := parseCandidate(candidatePath)
+					if parseErr != nil {
+						return provisioningProfileCandidate{}, parseErr
+					}
+					candidates = append(candidates, candidate)
+				}
+			}
 		}
-		created, parseErr := parseCandidate(createdPath)
-		if parseErr != nil {
-			return parseErr
+		selected, selectErr := selectProvisioningProfile(candidates, credentials.teamID, identifier, identityFingerprint)
+		if selectErr != nil && publisher != nil && bundleResourceID != "" {
+			createdPath, createErr := createASCProvisioningProfile(ctx, publisher, bundleResourceID, identifier, identityFingerprint, destinationDir)
+			if createErr != nil {
+				return provisioningProfileCandidate{}, createErr
+			}
+			created, parseErr := parseCandidate(createdPath)
+			if parseErr != nil {
+				return provisioningProfileCandidate{}, parseErr
+			}
+			candidates = append(candidates, created)
+			selected, selectErr = selectProvisioningProfile(candidates, credentials.teamID, identifier, identityFingerprint)
+			if selectErr == nil {
+				_, _ = fmt.Fprintf(privateLog, "Created an App Store provisioning profile for %s through the App Store Connect API.\n", identifier)
+			}
 		}
-		candidates = append(candidates, created)
-		selected, selectErr = selectProvisioningProfile(candidates, credentials.teamID, bundleID, identityFingerprint)
-		if selectErr == nil {
-			_, _ = fmt.Fprintln(privateLog, "Created an App Store provisioning profile through the App Store Connect API.")
+		return selected, selectErr
+	}
+
+	// Installs a bundle's selected profile, embeds it, and writes the
+	// entitlements it is signed with: exactly what the profile grants.
+	prepareBundle := func(bundlePath string, selected provisioningProfileCandidate, entitlementsPath string) error {
+		installedProfile := filepath.Join(privateHome, "Library", "MobileDevice", "Provisioning Profiles", selected.profile.UUID+".mobileprovision")
+		if err := copyPrivateFile(selected.path, installedProfile); err != nil {
+			return fmt.Errorf("install provisioning profile")
 		}
+		if err := copyPrivateFile(selected.path, filepath.Join(bundlePath, "embedded.mobileprovision")); err != nil {
+			return fmt.Errorf("embed provisioning profile")
+		}
+		entitlements, err := plist.Marshal(selected.profile.Entitlements, plist.XMLFormat)
+		if err != nil || os.WriteFile(entitlementsPath, entitlements, 0600) != nil {
+			return fmt.Errorf("prepare signing entitlements")
+		}
+		return nil
 	}
-	if selectErr != nil {
-		return selectErr
+
+	selected, err := resolveProfile(bundleID, filepath.Join(secretsDir, "profiles-app"))
+	if err != nil {
+		return err
 	}
-	profilePath, profile := selected.path, selected.profile
-	installedProfile := filepath.Join(privateHome, "Library", "MobileDevice", "Provisioning Profiles", profile.UUID+".mobileprovision")
-	if err := copyPrivateFile(profilePath, installedProfile); err != nil {
-		return fmt.Errorf("install provisioning profile")
+	application := signingTarget{path: appPath, entitlementsPath: filepath.Join(secretsDir, "entitlements.plist")}
+	if err := prepareBundle(application.path, selected, application.entitlementsPath); err != nil {
+		return err
 	}
-	if err := copyPrivateFile(profilePath, filepath.Join(appPath, "embedded.mobileprovision")); err != nil {
-		return fmt.Errorf("embed provisioning profile")
+	extensionTargets := make([]signingTarget, 0, len(extensions))
+	for index, extension := range extensions {
+		selected, err := resolveProfile(extension.bundleID, filepath.Join(secretsDir, fmt.Sprintf("profiles-extension-%02d", index)))
+		if err != nil {
+			return fmt.Errorf("app extension %s: %w", extension.bundleID, err)
+		}
+		target := signingTarget{
+			path:             extension.path,
+			entitlementsPath: filepath.Join(secretsDir, fmt.Sprintf("entitlements-extension-%02d.plist", index)),
+		}
+		if err := prepareBundle(target.path, selected, target.entitlementsPath); err != nil {
+			return err
+		}
+		extensionTargets = append(extensionTargets, target)
 	}
-	entitlementsPath := filepath.Join(secretsDir, "entitlements.plist")
-	entitlements, err := plist.Marshal(profile.Entitlements, plist.XMLFormat)
-	if err != nil || os.WriteFile(entitlementsPath, entitlements, 0600) != nil {
-		return fmt.Errorf("prepare signing entitlements")
-	}
-	if err := signApplication(run, appPath, signingIdentity, entitlementsPath, keychainPath); err != nil {
+	if err := signApplication(run, application, extensionTargets, signingIdentity, keychainPath); err != nil {
 		return err
 	}
 
@@ -468,22 +548,68 @@ func extractUnsignedIPA(ipaPath, destinationRoot string) (string, error) {
 	return apps[0], nil
 }
 
-func rejectNestedApplications(appPath string) error {
-	return filepath.WalkDir(appPath, func(path string, entry os.DirEntry, err error) error {
+// discoverAppExtensions returns every app extension bundle directly inside
+// the application's PlugIns directory, and fails closed on any other nested
+// application.
+//
+// PlugIns/*.appex is the one nested layout this runner signs: each such
+// extension is an App ID of its own whose App Store profile comes from the
+// same discovery that serves the application. Watch applications, App Clips,
+// XPC services, ExtensionKit extensions and bundles nested inside an
+// extension need provisioning this runner does not perform, so they are
+// refused rather than uploaded half-signed.
+func discoverAppExtensions(appPath string) ([]string, error) {
+	pluginsRoot := filepath.Join(appPath, "PlugIns")
+	var extensions []string
+	err := filepath.WalkDir(appPath, func(current string, entry os.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
-		if path == appPath {
+		if current == appPath || current == pluginsRoot || !entry.IsDir() {
 			return nil
 		}
 		name := strings.ToLower(entry.Name())
-		if entry.IsDir() && (strings.HasSuffix(name, ".appex") || strings.HasSuffix(name, ".app") ||
+		if filepath.Dir(current) == pluginsRoot {
+			if !strings.HasSuffix(name, ".appex") {
+				return fmt.Errorf("PlugIns may contain only app extension bundles")
+			}
+			if len(extensions) == maxAppExtensions {
+				return fmt.Errorf("application contains more than %d app extensions", maxAppExtensions)
+			}
+			extensions = append(extensions, current)
+			return nil
+		}
+		if strings.HasSuffix(name, ".appex") || strings.HasSuffix(name, ".app") ||
 			strings.HasSuffix(name, ".xpc") || name == "plugins" || name == "watch" ||
-			name == "appclips" || name == "xpcservices") {
-			return fmt.Errorf("embedded applications require separate provisioning profiles and are not supported")
+			name == "appclips" || name == "xpcservices" {
+			if pathWithin(pluginsRoot, current) {
+				return fmt.Errorf("bundles nested inside an app extension are not supported")
+			}
+			return fmt.Errorf("embedded applications other than PlugIns app extensions require provisioning that is not supported")
 		}
 		return nil
 	})
+	if err != nil {
+		return nil, err
+	}
+	return extensions, nil
+}
+
+// readExtensionBundleID reads an app extension's bundle identifier and
+// requires it to extend the application's, as App Store Connect does. Holding
+// it to that here is also what keeps a project from steering this runner into
+// registering or provisioning an arbitrary identifier in the team's account.
+func readExtensionBundleID(extensionPath, applicationBundleID string) (string, error) {
+	bundleID, err := readBundleID(filepath.Join(extensionPath, "Info.plist"))
+	if err != nil {
+		return "", fmt.Errorf("read app extension bundle identifier")
+	}
+	suffix, extendsApplication := strings.CutPrefix(bundleID, applicationBundleID+".")
+	if !extendsApplication || suffix == "" || strings.HasPrefix(suffix, ".") ||
+		strings.HasSuffix(suffix, ".") || !bundleIDPattern.MatchString(bundleID) {
+		return "", fmt.Errorf("app extension bundle identifier must extend the application's bundle identifier")
+	}
+	return bundleID, nil
 }
 
 func setBundleBuildNumber(infoPath, buildNumber string) error {
@@ -562,14 +688,48 @@ func altoolArgs(operation, ipaPath string, credentials *appleCredentials) []stri
 	return args
 }
 
-func signApplication(run executor, appPath, identity, entitlementsPath, keychainPath string) error {
+// signApplication signs from the inside out: each app extension's own nested
+// code and then the extension with its entitlements, and only after that the
+// application, whose seal records every signature inside it.
+func signApplication(run executor, application signingTarget, extensions []signingTarget, identity, keychainPath string) error {
+	for _, extension := range extensions {
+		if err := signBundle(run, extension, "", identity, keychainPath); err != nil {
+			return err
+		}
+	}
+	if err := signBundle(run, application, filepath.Join(application.path, "PlugIns"), identity, keychainPath); err != nil {
+		return err
+	}
+	return run.run(filepath.Dir(application.path), "/usr/bin/codesign", "--verify", "--deep", "--strict", application.path)
+}
+
+func signBundle(run executor, target signingTarget, skip, identity, keychainPath string) error {
+	nested, err := nestedCode(target.path, skip)
+	if err != nil {
+		return err
+	}
+	for _, code := range nested {
+		if err := run.run(filepath.Dir(code), "/usr/bin/codesign", "--force", "--sign", identity, "--keychain", keychainPath, "--timestamp=none", code); err != nil {
+			return err
+		}
+	}
+	return run.run(filepath.Dir(target.path), "/usr/bin/codesign", "--force", "--sign", identity, "--keychain", keychainPath, "--timestamp=none", "--generate-entitlement-der", "--entitlements", target.entitlementsPath, target.path)
+}
+
+// nestedCode lists the frameworks and dynamic libraries inside a bundle,
+// deepest first, leaving out skip: the application's PlugIns, whose
+// extensions are already signed with entitlements of their own by then.
+func nestedCode(bundlePath, skip string) ([]string, error) {
 	var nested []string
-	err := filepath.WalkDir(appPath, func(path string, entry os.DirEntry, err error) error {
+	err := filepath.WalkDir(bundlePath, func(path string, entry os.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
-		if path == appPath {
+		if path == bundlePath {
 			return nil
+		}
+		if entry.IsDir() && skip != "" && path == skip {
+			return filepath.SkipDir
 		}
 		if entry.IsDir() && strings.HasSuffix(entry.Name(), ".framework") {
 			nested = append(nested, path)
@@ -581,20 +741,12 @@ func signApplication(run executor, appPath, identity, entitlementsPath, keychain
 		return nil
 	})
 	if err != nil {
-		return fmt.Errorf("inspect nested code")
+		return nil, fmt.Errorf("inspect nested code")
 	}
 	sort.Slice(nested, func(i, j int) bool {
 		return strings.Count(nested[i], string(filepath.Separator)) > strings.Count(nested[j], string(filepath.Separator))
 	})
-	for _, target := range nested {
-		if err := run.run(filepath.Dir(target), "/usr/bin/codesign", "--force", "--sign", identity, "--keychain", keychainPath, "--timestamp=none", target); err != nil {
-			return err
-		}
-	}
-	if err := run.run(filepath.Dir(appPath), "/usr/bin/codesign", "--force", "--sign", identity, "--keychain", keychainPath, "--timestamp=none", "--generate-entitlement-der", "--entitlements", entitlementsPath, appPath); err != nil {
-		return err
-	}
-	return run.run(filepath.Dir(appPath), "/usr/bin/codesign", "--verify", "--deep", "--strict", appPath)
+	return nested, nil
 }
 
 func readBundleID(infoPath string) (string, error) {
