@@ -1,6 +1,6 @@
 # iOS Cloud Builder
 
-Build unsigned iOS applications, or deploy signed releases to TestFlight, from Linux, WSL, or Windows using a narrowly scoped remote macOS build. This is a truthful open-source remote-build/orchestration project derived from [MobAI-App/ios-builder](https://github.com/MobAI-App/ios-builder), not a generic compute service or a disguised workload.
+Build unsigned iOS applications, run their test suites, or deploy signed releases to TestFlight, from Linux, WSL, or Windows using a narrowly scoped remote macOS build. This is a truthful open-source remote-build/orchestration project derived from [MobAI-App/ios-builder](https://github.com/MobAI-App/ios-builder), not a generic compute service or a disguised workload.
 
 The central backend lets multiple private application repositories use one public builder repository without committing private source or publishing plaintext output:
 
@@ -34,9 +34,9 @@ The original repository backend remains available for existing MobAI users and r
 - The signing job never checks out private source and never runs project scripts or dependencies.
 - Detailed dependency/compiler output is redirected to a private log from process start.
 - Build logs and locally downloaded IPAs are encrypted to the caller's local-only AGE identity. TestFlight intermediates use a distinct AGE identity held by the protected Environment.
-- The public artifact contains only `App.ipa.age` and `build.log.age`, is retained for one day, and is deleted early when local retrieval succeeds.
+- The public artifact contains only `App.ipa.age` and `build.log.age` (for a test run, `test.log.age` and `report.md.age`), is retained for one day, and is deleted early when local retrieval succeeds.
 - Central mode creates no Actions caches and uploads no DerivedData, dSYM, archive, source, or plaintext diagnostics.
-- Inputs are validated before credential creation; build commands use fixed argv arrays, never `eval` or user-provided scripts.
+- Inputs are validated before credential creation; build commands use fixed argv arrays, never `eval`. The only script the workflow runs is the test script of `builder ios test`: a validated path to a file inside the snapshot, never a command string.
 - Full UUIDv4 correlation binds the workflow run and artifact to one build.
 
 These controls protect against accidental public disclosure; they do not sandbox intentionally malicious private project code or hide plaintext from GitHub's active runner. Read the full [threat model](docs/THREAT_MODEL.md).
@@ -50,7 +50,7 @@ Local workstation (Linux/WSL/macOS; Windows through PowerShell/WSL):
 - A Git remote using an explicit `github.com` HTTPS or SSH URL
 - Builder CLI
 
-The public builder workflow uses the stable `macos-15` runner image. No local Mac, Xcode, certificate, or provisioning profile is required for an unsigned central build. TestFlight deployment requires an Apple Distribution certificate, one or more App Store distribution provisioning profiles, and an App Store Connect API key.
+Builds use the stable `macos-15` runner image and test runs use `macos-26`; both select Xcode 26.3. No local Mac, Xcode, certificate, or provisioning profile is required for an unsigned central build. TestFlight deployment requires an Apple Distribution certificate, one or more App Store distribution provisioning profiles, and an App Store Connect API key.
 
 ## Install the CLI
 
@@ -264,6 +264,66 @@ The protected job replaces only `CFBundleVersion` with the unique GitHub Actions
 `CFBundleShortVersionString` is preserved. It validates the signed IPA with App
 Store Connect before uploading it.
 
+## Running tests
+
+`builder ios test` runs the private project's own test suite on the public builder's `macos-26` runner (Xcode 26.3 and its iOS 26.2 simulators), with the same privacy model as a build:
+
+```bash
+builder ios test                                   # the script from ios.testScript
+builder ios test --script scripts/ios-test.sh --timeout 2h -o dist
+```
+
+Set the default script once in `builder.json`; `--script` overrides it:
+
+```json
+"ios": { "path": "ios", "testScript": "scripts/ios-test.sh" }
+```
+
+The script is a file in the repository, named relative to the repository root with forward slashes, using only letters, digits, `.`, `_`, `+`, `-` and `/`, with no `..`, no `.git`, and no segment starting with `-`. Before snapshotting, the CLI checks that the file exists, stays inside the repository, and is not excluded by `.gitignore`. It then snapshots and dispatches like `ios build` (with `operation: test` and `test_script`), shows progress, downloads and decrypts the results, prints the report, and writes:
+
+```text
+./dist/ios-test-<build-id>.log   everything the script printed
+./dist/ios-test-<build-id>.md    the script's report.md, when it wrote one
+```
+
+The command exits non-zero when the tests failed. `builder ios logs <build-id>` retrieves both files again while the one-day artifact exists. The public builder's default branch must contain a workflow with the `test` operation; an older workflow rejects the dispatch.
+
+### Script contract
+
+The runner executes `bash -- <script>` with the snapshot root as the working directory. `bash` on the macOS image is 3.2.
+
+| Variable | Value |
+|---|---|
+| `BUILDER_SOURCE_DIR` | Absolute path of the checked-out snapshot, which is also the working directory |
+| `BUILDER_IOS_PATH` | `ios.path` from `builder.json`, relative to `BUILDER_SOURCE_DIR` (`.` when unset) |
+| `BUILDER_REPORT_DIR` | An empty private directory. Write an optional Markdown summary to `$BUILDER_REPORT_DIR/report.md`; the first 1 MiB is kept |
+
+- Exit status `0` means the tests passed. Any other status, a timeout, or a script that cannot start means they failed.
+- The script is stopped (SIGTERM, then SIGKILL after 30 seconds) after 105 minutes; the job's own limit is 120. Anything it leaves running in the background is stopped when it exits.
+- Otherwise the script sees the runner's normal environment (`PATH`, `HOME`, `DEVELOPER_DIR`, `CI=true`, Homebrew and the preinstalled toolchains) minus `GITHUB_STEP_SUMMARY`, `GITHUB_OUTPUT`, `GITHUB_ENV`, `GITHUB_PATH`, `GITHUB_STATE`, `GITHUB_TOKEN`, every `ACTIONS_*` and `INPUT_*` variable, and any variable whose name contains `TOKEN`, `SECRET`, `PASSWORD`, `PASSWD`, `PRIVATE_KEY`, `CREDENTIAL` or `AGE_IDENTITY`. The test job has no Apple credentials, no Environment and no signing job.
+- The test job does not detect frameworks or install toolchains; the script sets up what it needs (for example CocoaPods, a Flutter SDK, or `npm ci`).
+- A log larger than 60 MiB keeps its first 8 MiB and its end.
+
+For example:
+
+```bash
+#!/bin/bash
+set -uo pipefail
+cd "$BUILDER_SOURCE_DIR/$BUILDER_IOS_PATH"
+xcodebuild test -quiet -scheme MyApp -destination 'platform=iOS Simulator,name=iPhone 17,OS=26.2'
+status=$?
+printf '# MyApp tests\n\n`xcodebuild test` exited with status %d.\n' "$status" > "$BUILDER_REPORT_DIR/report.md"
+exit "$status"
+```
+
+### Test privacy model
+
+- Checkout is identical to a build's: a token scoped to the one source repository, revoked before the script starts.
+- The script's stdout and stderr go straight to a private log file. The trusted runner prints only fixed status lines, so nothing the script prints, including workflow commands such as `::error::`, reaches the public log.
+- The log and `report.md` are encrypted to your local AGE identity before upload. The artifact `ios-builder-<build-id>` contains only `test.log.age` and `report.md.age`.
+- The public run shows the dispatch inputs (including the script path) and only `Tests passed` or `Tests failed. Download the encrypted report using Builder CLI.`
+- Environment scrubbing prevents accidental publication, not deliberate exfiltration by the script; see the [threat model](docs/THREAT_MODEL.md).
+
 ## Supported projects
 
 - Native Swift/Objective-C iOS projects and workspaces
@@ -331,7 +391,7 @@ go build ./cmd/builder-runner
 
 - A one-time GitHub App browser setup and private-repository selection cannot be completed safely by the CLI alone.
 - Repository/source names and workflow inputs are public metadata even though source contents and outputs are encrypted.
-- A malicious project or dependency runs as the runner user and is not strongly sandboxed.
+- A malicious project, dependency, or test script runs as the runner user and is not strongly sandboxed.
 - The central hosted-runner design has the policy caveat described in [COMPLIANCE.md](COMPLIANCE.md).
 - Central TestFlight supports multiple top-level applications by exact Bundle ID and signs their `PlugIns` app extensions, but still rejects Watch apps, App Clips, XPC services, ExtensionKit extensions, and bundles nested inside an extension.
 - A successful upload means App Store Connect accepted the binary; it does not mean Apple's asynchronous processing or review has completed.

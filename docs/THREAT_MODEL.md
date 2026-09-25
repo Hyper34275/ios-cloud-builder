@@ -2,7 +2,7 @@
 
 ## Security goals
 
-Central mode is designed so a public repository never commits private application source, uploads a plaintext private IPA or detailed build log, or keeps a persistent private-repository credential in code. The local CLI pushes the working tree only to a temporary ref in the private source repository. A repository-scoped GitHub App installation token performs the private checkout. Only AGE ciphertext is uploaded. Optional Apple signing material and a dedicated transport AGE identity exist only as secrets of the protected `apple-production` Environment.
+Central mode is designed so a public repository never commits private application source, uploads a plaintext private IPA, detailed build or test log, or test report, or keeps a persistent private-repository credential in code. The local CLI pushes the working tree only to a temporary ref in the private source repository. A repository-scoped GitHub App installation token performs the private checkout. Only AGE ciphertext is uploaded. Optional Apple signing material and a dedicated transport AGE identity exist only as secrets of the protected `apple-production` Environment.
 
 ## Trust boundaries
 
@@ -11,7 +11,7 @@ Central mode is designed so a public repository never commits private applicatio
 - GitHub's runner and Actions control plane necessarily see plaintext while the job runs.
 - Public Actions logs, artifacts, caches, inputs, summaries, annotations, and public pull requests are untrusted/public territory.
 - Maintainers with write/admin access to the public builder are highly trusted. They can modify the workflow or helper and can dispatch builds. Keep this group minimal.
-- Private application build scripts and dependencies execute arbitrary code on the runner. Environment scrubbing prevents accidental access to known Actions channels and tokens, but is not a sandbox and cannot prevent all network exfiltration by a malicious project.
+- Private application build scripts, dependencies, and the test script of a test run execute arbitrary code on the runner. Environment scrubbing prevents accidental access to known Actions channels and tokens, but is not a sandbox and cannot prevent all network exfiltration by a malicious project.
 - The TestFlight signing job trusts the approved public-builder revision, GitHub Environment controls, GitHub Actions control plane, Apple signing material, and the authenticated unsigned IPA produced by the first job. It never checks out or executes private project source.
 
 ## Threats and mitigations
@@ -32,15 +32,19 @@ The App has only Metadata read and Contents read, and is installed using **Only 
 
 ### Token persistence and project-code access
 
-Both checkouts use `persist-credentials: false`. The App token is passed only to the private checkout and is explicitly revoked before dependency or build code runs. The build helper removes GitHub/Actions token and file-command variables from child environments. The workflow must never print environment variables, remotes, tokens, or secret values.
+Both checkouts use `persist-credentials: false`. The App token is passed only to the private checkout and is explicitly revoked before dependency, build, or test code runs. The build helper removes GitHub/Actions token and file-command variables from child environments. A test script inherits the runner's environment minus the job summary and file-command variables (`GITHUB_STEP_SUMMARY`, `GITHUB_OUTPUT`, `GITHUB_ENV`, `GITHUB_PATH`, `GITHUB_STATE`), `GITHUB_TOKEN`, every `ACTIONS_*` runtime, results, cache, and OIDC variable, `INPUT_*`, and any name that looks like a credential; the test job references no secret other than the App key used to mint the token. The workflow must never print environment variables, remotes, tokens, or secret values.
 
 ### Input, expression, path, and shell injection
 
-The trusted Go helper validates UUID, owner, repository, exact snapshot ref, relative iOS path, scheme, configuration, framework enum, and X25519 recipient before token minting. Private paths are resolved after checkout and must remain inside the source root. Build processes receive fixed argv arrays; there is no `eval`, arbitrary command, arbitrary script, or generic shell input.
+The trusted Go helper validates UUID, owner, repository, exact snapshot ref, relative iOS path, scheme, configuration, framework enum, X25519 recipient, and test script path before token minting. Private paths are resolved after checkout and must remain inside the source root. Build processes receive fixed argv arrays; there is no `eval`, arbitrary command, or generic shell input.
+
+The one script input, `test_script`, is accepted only with `operation: test` and rejected otherwise. Before credentials exist it must be a clean relative path of portable characters with no `..`, `.git`, control characters, backslashes, or segment starting with `-`. After checkout it must resolve, symlinks included, to a regular file inside the snapshot and outside `.git`. It reaches the runner only through an environment variable and runs as `bash -- <path>`; it is never interpolated into a shell command, so it names a file from the authorized snapshot and cannot carry a command.
 
 ### Artifact, log, and cache disclosure
 
 Compiler/dependency output starts redirected into a private build log. Both IPA and log are AGE-encrypted before upload, plaintext files are deleted, and the artifact step uses an exact ciphertext allowlist with one-day retention. The CLI binds the artifact to the exact run/build UUID, decrypts locally, validates IPA structure, and attempts remote artifact deletion. Central mode uses no Actions cache and never uploads DerivedData, dSYMs, archives, source, or plaintext diagnostics.
+
+A test run applies the same rules to a different pair of files. The script's stdout and stderr are the private log file itself from process start, so no output passes through the trusted helper, which prints only fixed status lines; workflow commands the script prints are never interpreted. The script runs in its own process group, which is stopped when it exits or after the 105-minute timeout, so a background process cannot keep writing once the outputs are encrypted. Its report is read only from a fresh private directory, only as a regular file, and only up to 1 MiB. The log and report are encrypted to the caller, their plaintext and the report directory are deleted, and the upload allowlists exactly `test.log.age` and `report.md.age`. The public log says only whether the tests passed.
 
 AGE protects artifact confidentiality and integrity after encryption. It does not hide plaintext from the active runner or make output authentic against malicious authorized workflow code.
 
@@ -56,6 +60,10 @@ own App Store profile and then the app, without executing either,
 validates the signed IPA with App Store Connect, and uploads it directly to Apple
 before deleting it with the ephemeral runner; only an AGE-encrypted diagnostic log is
 uploaded to GitHub.
+
+### Hostile or careless test script
+
+A test script is project code with the runner's environment, minus the variables above. It cannot accidentally publish through the job summary, outputs, environment, `PATH`, or workflow commands, and it holds no repository token, runtime token, OIDC token, or Apple credential. A deliberately hostile script can still do what any hostile build phase can: find the runner's file-command files under the runner's temporary directory, modify actions that later steps run, open network connections, or start a process outside its process group. The test job has no Environment and no signing job, and its App token is revoked before the script starts, so such a script reaches nothing a build phase could not. Treat the test script with the same review as other build code.
 
 ### Apple credential compromise
 
@@ -82,7 +90,7 @@ Pinned Actions reduce tag-retargeting risk. Package managers and private project
 
 ### Metadata disclosure
 
-Public workflow metadata/inputs can expose source owner/repository names, iOS path, scheme, and snapshot ref even though source contents and outputs are encrypted. Do not use this backend when repository identity itself is confidential. An opaque broker would be required to hide that metadata.
+Public workflow metadata/inputs can expose source owner/repository names, iOS path, scheme, test script path, and snapshot ref even though source contents and outputs are encrypted. Do not use this backend when repository identity itself is confidential. An opaque broker would be required to hide that metadata.
 
 ## Explicit non-goals
 
