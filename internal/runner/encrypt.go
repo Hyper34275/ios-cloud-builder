@@ -61,10 +61,17 @@ func EncryptTestArtifacts(recipientText, logPath, reportPath, outputDir string) 
 		removePlaintext(logPath, reportPath)
 		return fmt.Errorf("parse diagnostic AGE recipient")
 	}
-	if err := prepareEncryptedDir(outputDir, encryptedTestLogName, encryptedTestReportName); err != nil {
+	if err := prepareEncryptedDir(outputDir, encryptedTestLogName, encryptedTestReportName, encryptedArtifactName); err != nil {
 		removePlaintext(logPath, reportPath)
 		return err
 	}
+	return encryptTestLogAndReport(recipient, logPath, reportPath, outputDir)
+}
+
+// encryptTestLogAndReport encrypts the log and optional report into a
+// directory prepareEncryptedDir has already emptied, and removes both
+// plaintext files even if encryption fails.
+func encryptTestLogAndReport(recipient age.Recipient, logPath, reportPath, outputDir string) error {
 	if err := encryptAndRemove(recipient, logPath, filepath.Join(outputDir, encryptedTestLogName), false); err != nil {
 		removePlaintext(reportPath)
 		return err

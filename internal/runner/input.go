@@ -2,7 +2,8 @@
 // central-builder workflow. It deliberately accepts structured iOS build
 // options rather than commands. The one script it runs is a test operation's
 // test_script: a validated path to a file inside the authorized snapshot, never
-// a command line.
+// a command line. A windows-test operation may also name one artifact_path, a
+// file the script builds, which is encrypted only after the tests pass.
 package runner
 
 import (
@@ -38,6 +39,17 @@ var (
 // MaxTestScriptPathLength bounds the test_script input.
 const MaxTestScriptPathLength = 256
 
+// MaxArtifactPathLength bounds the artifact_path input.
+const MaxArtifactPathLength = MaxTestScriptPathLength
+
+// Operations accepted by the central workflow.
+const (
+	OperationBuild       = "build"
+	OperationTestFlight  = "testflight"
+	OperationTest        = "test"
+	OperationWindowsTest = "windows-test"
+)
+
 // Inputs are the complete set of values accepted from workflow_dispatch.
 type Inputs struct {
 	BuildID           string
@@ -51,6 +63,7 @@ type Inputs struct {
 	ArtifactRecipient string
 	Operation         string
 	TestScript        string
+	ArtifactPath      string
 }
 
 // Validate rejects values that could widen repository access, escape the
@@ -86,16 +99,28 @@ func (in *Inputs) Validate() error {
 		return fmt.Errorf("invalid artifact_recipient")
 	}
 	switch in.Operation {
-	case "build", "testflight":
+	case OperationBuild, OperationTestFlight:
 		if in.TestScript != "" {
-			return fmt.Errorf("test_script is accepted only for operation test")
+			return fmt.Errorf("test_script is accepted only for operations test and windows-test")
 		}
-	case "test":
+	case OperationTest:
 		if err := ValidateTestScriptPath(in.TestScript); err != nil {
 			return fmt.Errorf("invalid test_script: %w", err)
 		}
+	case OperationWindowsTest:
+		if err := ValidateWindowsTestScriptPath(in.TestScript); err != nil {
+			return fmt.Errorf("invalid test_script: %w", err)
+		}
+		if in.ArtifactPath != "" {
+			if err := ValidateArtifactPath(in.ArtifactPath); err != nil {
+				return fmt.Errorf("invalid artifact_path: %w", err)
+			}
+		}
 	default:
 		return fmt.Errorf("invalid operation")
+	}
+	if in.ArtifactPath != "" && in.Operation != OperationWindowsTest {
+		return fmt.Errorf("artifact_path is accepted only for operation windows-test")
 	}
 	return nil
 }
@@ -106,11 +131,41 @@ func (in *Inputs) Validate() error {
 // ResolveTestScript later proves that it names a regular file in the checkout.
 // Error messages never echo the value.
 func ValidateTestScriptPath(value string) error {
+	return validateSnapshotFilePath(value, MaxTestScriptPathLength)
+}
+
+// ValidateWindowsTestScriptPath applies ValidateTestScriptPath and requires a
+// script the Windows runner knows how to start: .ps1 (PowerShell) or .sh
+// (Git for Windows bash).
+func ValidateWindowsTestScriptPath(value string) error {
+	if err := ValidateTestScriptPath(value); err != nil {
+		return err
+	}
+	if !IsPowerShellScript(value) && !strings.EqualFold(path.Ext(value), ".sh") {
+		return fmt.Errorf("must end in .ps1 or .sh")
+	}
+	return nil
+}
+
+// ValidateArtifactPath checks an artifact_path value with the same rules as
+// test_script. ResolveTestArtifact later proves, after the tests pass, that it
+// names a regular file in the checkout.
+func ValidateArtifactPath(value string) error {
+	return validateSnapshotFilePath(value, MaxArtifactPathLength)
+}
+
+// IsPowerShellScript reports whether a test script runs under pwsh rather
+// than bash.
+func IsPowerShellScript(script string) bool {
+	return strings.EqualFold(path.Ext(script), ".ps1")
+}
+
+func validateSnapshotFilePath(value string, maxLength int) error {
 	switch {
 	case value == "":
 		return fmt.Errorf("is required")
-	case len(value) > MaxTestScriptPathLength:
-		return fmt.Errorf("is longer than %d bytes", MaxTestScriptPathLength)
+	case len(value) > maxLength:
+		return fmt.Errorf("is longer than %d bytes", maxLength)
 	case strings.HasPrefix(value, "/"):
 		return fmt.Errorf("must be relative to the repository root")
 	case strings.Contains(value, `\`):
@@ -122,12 +177,15 @@ func ValidateTestScriptPath(value string) error {
 		switch {
 		case segment == "..":
 			return fmt.Errorf("must remain inside the repository")
-		case strings.EqualFold(segment, ".git"): // APFS is case-insensitive by default
+		case strings.EqualFold(segment, ".git"): // APFS and NTFS are case-insensitive by default
 			return fmt.Errorf("must not point into Git metadata")
 		case segment == "" || segment == ".":
 			return fmt.Errorf("must be a clean path")
 		case !testScriptSegmentPattern.MatchString(segment):
 			return fmt.Errorf("may contain only letters, digits, '.', '_', '+', '-' and '/', and no segment may start with '-'")
+		case strings.HasSuffix(segment, "."):
+			// Windows drops a trailing '.', so ".git." would name ".git".
+			return fmt.Errorf("must not have a path segment ending in '.'")
 		}
 	}
 	if path.Clean(value) != value {

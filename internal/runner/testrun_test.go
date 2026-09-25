@@ -71,6 +71,11 @@ var (
 		"tëst.sh",
 		"test.sh\u202e",
 		strings.Repeat("a", MaxTestScriptPathLength+1),
+		// Windows drops a trailing '.', so these would name .git and test.sh.
+		".git./config",
+		"scripts./test.sh",
+		"test.sh.",
+		"...",
 	}
 )
 

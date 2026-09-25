@@ -23,6 +23,10 @@ var (
 // workflow accepts.
 const MaxTestScriptPathLength = 256
 
+// MaxArtifactPathLength is the longest artifact path the central workflow
+// accepts.
+const MaxArtifactPathLength = MaxTestScriptPathLength
+
 // Backend identifies where a build workflow is executed.
 type Backend string
 
@@ -52,6 +56,21 @@ type Config struct {
 	ReactNative ReactNativeConfig `json:"reactNative,omitempty"`
 	KMP         KMPConfig         `json:"kmp,omitempty"`
 	MobAI       MobAIConfig       `json:"mobai,omitempty"`
+	// Windows is omitted when empty, so saving a configuration never adds a
+	// section its project does not use.
+	Windows WindowsConfig `json:"windows,omitzero"`
+}
+
+// WindowsConfig holds the defaults of `builder windows test`, which runs a
+// test script on a Windows runner of the central builder.
+type WindowsConfig struct {
+	// TestScript is the .ps1 or .sh script to run, relative to the repository
+	// root (e.g. "scripts/windows-test.ps1").
+	TestScript string `json:"testScript,omitempty"`
+	// Artifact is the file a passing script builds, relative to the repository
+	// root (e.g. "dist/Setup.exe"). It is encrypted, downloaded and decrypted
+	// to the output directory under its base name.
+	Artifact string `json:"artifact,omitempty"`
 }
 
 // FlutterConfig holds Flutter-specific settings
@@ -200,6 +219,16 @@ func (c *Config) Validate() error {
 			return &ValidationError{Field: "ios.testScript", Message: err.Error()}
 		}
 	}
+	if c.Windows.TestScript != "" {
+		if err := ValidateWindowsTestScriptPath(c.Windows.TestScript); err != nil {
+			return &ValidationError{Field: "windows.testScript", Message: err.Error()}
+		}
+	}
+	if c.Windows.Artifact != "" {
+		if err := ValidateArtifactPath(c.Windows.Artifact); err != nil {
+			return &ValidationError{Field: "windows.artifact", Message: err.Error()}
+		}
+	}
 	return nil
 }
 
@@ -208,15 +237,37 @@ func (c *Config) Validate() error {
 // a clean path relative to the repository root, using forward slashes, with
 // no traversal, Git metadata, control characters, or unusual characters.
 func ValidateTestScriptPath(value string) error {
+	return validateSnapshotFilePath(value, MaxTestScriptPathLength, "scripts/test.sh")
+}
+
+// ValidateWindowsTestScriptPath applies ValidateTestScriptPath and requires a
+// .ps1 (run with pwsh) or .sh (run with Git for Windows bash) script.
+func ValidateWindowsTestScriptPath(value string) error {
+	if err := validateSnapshotFilePath(value, MaxTestScriptPathLength, "scripts/windows-test.ps1"); err != nil {
+		return err
+	}
+	if ext := strings.ToLower(path.Ext(value)); ext != ".ps1" && ext != ".sh" {
+		return errors.New("must end in .ps1 (run with pwsh) or .sh (run with bash)")
+	}
+	return nil
+}
+
+// ValidateArtifactPath applies the central workflow's artifact_path rule,
+// which is the test_script rule, locally.
+func ValidateArtifactPath(value string) error {
+	return validateSnapshotFilePath(value, MaxArtifactPathLength, "dist/Setup.exe")
+}
+
+func validateSnapshotFilePath(value string, maxLength int, example string) error {
 	switch {
 	case value == "":
 		return errors.New("is required")
-	case len(value) > MaxTestScriptPathLength:
-		return fmt.Errorf("is longer than %d bytes", MaxTestScriptPathLength)
+	case len(value) > maxLength:
+		return fmt.Errorf("is longer than %d bytes", maxLength)
 	case strings.HasPrefix(value, "/"):
-		return errors.New("must be relative to the repository root, like scripts/test.sh")
+		return fmt.Errorf("must be relative to the repository root, like %s", example)
 	case strings.Contains(value, `\`):
-		return errors.New("must use forward slashes, like scripts/test.sh")
+		return fmt.Errorf("must use forward slashes, like %s", example)
 	case strings.IndexFunc(value, func(r rune) bool { return r < 0x20 || r == 0x7f }) >= 0:
 		return errors.New("must not contain control characters")
 	}
@@ -224,12 +275,15 @@ func ValidateTestScriptPath(value string) error {
 		switch {
 		case segment == "..":
 			return errors.New("must stay inside the repository")
-		case strings.EqualFold(segment, ".git"): // APFS is case-insensitive by default
+		case strings.EqualFold(segment, ".git"): // APFS and NTFS are case-insensitive by default
 			return errors.New("must not point into Git metadata")
 		case segment == "" || segment == ".":
 			return errors.New("must be a clean path without ./, // or a trailing /")
 		case !testScriptSegmentPattern.MatchString(segment):
 			return errors.New("may contain only letters, digits, '.', '_', '+', '-' and '/', and no path segment may start with '-'")
+		case strings.HasSuffix(segment, "."):
+			// Windows drops a trailing '.', so ".git." would name ".git".
+			return errors.New("must not have a path segment ending in '.'")
 		}
 	}
 	if path.Clean(value) != value {

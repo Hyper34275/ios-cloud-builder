@@ -3,6 +3,7 @@ package config
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -327,5 +328,91 @@ func TestManager_TestScriptRoundTrip(t *testing.T) {
 	}
 	if data, _ := os.ReadFile(path); bytes.Contains(data, []byte("testScript")) {
 		t.Fatalf("an unset testScript was written: %s", data)
+	}
+}
+
+func TestConfig_WindowsSection(t *testing.T) {
+	base := Config{Project: "App", GitHub: GitHubConfig{Owner: "owner", Repo: "repo"}}
+	for _, windows := range []WindowsConfig{
+		{},
+		{TestScript: "scripts/windows-test.ps1"},
+		{TestScript: "scripts/Windows-Test.PS1", Artifact: "dist/EntrixSetup.exe"},
+		{TestScript: "ci/windows.sh", Artifact: "out/Release/App+Tools_1.2.msi"},
+		{Artifact: "dist/EntrixSetup.exe"},
+	} {
+		cfg := base
+		cfg.Windows = windows
+		if err := cfg.Validate(); err != nil {
+			t.Errorf("windows %+v rejected: %v", windows, err)
+		}
+	}
+	for field, windows := range map[string][]WindowsConfig{
+		"windows.testScript": {
+			{TestScript: "scripts/windows-test.cmd"}, {TestScript: "scripts/windows-test"}, {TestScript: "../test.ps1"},
+			{TestScript: `scripts\test.ps1`}, {TestScript: ".git/hooks/x.ps1"}, {TestScript: "scripts./test.ps1"},
+		},
+		"windows.artifact": {
+			{Artifact: "../EntrixSetup.exe"}, {Artifact: "/dist/EntrixSetup.exe"}, {Artifact: `dist\EntrixSetup.exe`},
+			{Artifact: "dist/Entrix Setup.exe"}, {Artifact: "dist/EntrixSetup.exe."}, {Artifact: ".git/config"},
+			{Artifact: "dist/Setup.exe:stream"},
+		},
+	} {
+		for _, value := range windows {
+			cfg := base
+			cfg.Windows = value
+			var validationErr *ValidationError
+			if err := cfg.Validate(); !errors.As(err, &validationErr) || validationErr.Field != field {
+				t.Errorf("windows %+v: Validate() = %v, want a %s error", value, err, field)
+			}
+		}
+	}
+}
+
+func TestManager_WindowsSectionIsBackwardsCompatible(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "builder.json")
+	mgr := &Manager{path: path}
+	write := func(contents string) {
+		t.Helper()
+		if err := os.WriteFile(path, []byte(contents), 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// An existing configuration without the section loads, validates, and
+	// saves without gaining one.
+	write(`{"project": "App", "platform": "ios", "github": {"owner": "owner", "repo": "repo"}, "ios": {"testScript": "scripts/ios-test.sh"}}`)
+	cfg, err := mgr.Load()
+	if err != nil || cfg.Validate() != nil || cfg.Windows != (WindowsConfig{}) {
+		t.Fatalf("Load(no windows section) = %+v, %v", cfg, err)
+	}
+	if err := mgr.Save(cfg); err != nil {
+		t.Fatal(err)
+	}
+	if data, _ := os.ReadFile(path); bytes.Contains(data, []byte(`"windows"`)) {
+		t.Fatalf("saving added an empty windows section: %s", data)
+	}
+
+	// The section round-trips, and sections this version does not know are
+	// ignored rather than rejected.
+	write(`{
+  "project": "App",
+  "platform": "ios",
+  "github": {"owner": "owner", "repo": "repo"},
+  "windows": {"testScript": "scripts/windows-test.ps1", "artifact": "dist/EntrixSetup.exe", "futureKey": true},
+  "android": {"gradle": "app"}
+}`)
+	cfg, err = mgr.Load()
+	if err != nil || cfg.Validate() != nil {
+		t.Fatalf("Load(windows section) = %+v, %v", cfg, err)
+	}
+	if cfg.Windows != (WindowsConfig{TestScript: "scripts/windows-test.ps1", Artifact: "dist/EntrixSetup.exe"}) {
+		t.Fatalf("Windows = %+v", cfg.Windows)
+	}
+	if err := mgr.Save(cfg); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil || !bytes.Contains(data, []byte(`"testScript": "scripts/windows-test.ps1"`)) || !bytes.Contains(data, []byte(`"artifact": "dist/EntrixSetup.exe"`)) {
+		t.Fatalf("saved builder.json = %s, %v", data, err)
 	}
 }
