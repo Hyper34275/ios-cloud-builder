@@ -583,7 +583,7 @@ Requires MobAI Pro and a MOBAI_API_KEY secret in the repository.`,
 
 var iosLogsCmd = &cobra.Command{
 	Use:   "logs <build-id>",
-	Short: "Download and decrypt a central build diagnostic log",
+	Short: "Download and decrypt a central build's log, or a test run's log and report",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		cfg, err := loadConfig()
@@ -598,11 +598,14 @@ var iosLogsCmd = &cobra.Command{
 			return err
 		}
 		output, _ := cmd.Flags().GetString("output")
-		path, err := build.NewCoordinator(cfg, ghClient).DownloadLogs(cmd.Context(), args[0], output)
+		diagnostics, err := build.NewCoordinator(cfg, ghClient).DownloadDiagnostics(cmd.Context(), args[0], output)
 		if err != nil {
 			return err
 		}
-		fmt.Println("Log:", path)
+		fmt.Println("Log:", diagnostics.LogPath)
+		if diagnostics.ReportPath != "" {
+			fmt.Println("Report:", diagnostics.ReportPath)
+		}
 		return nil
 	},
 }

@@ -1,6 +1,7 @@
 package config
 
 import (
+	"bytes"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -269,5 +270,62 @@ func TestConfig_RepositoryModeDoesNotRequireCentralFields(t *testing.T) {
 	}
 	if err := cfg.Validate(); err != nil {
 		t.Fatalf("Validate() error = %v", err)
+	}
+}
+
+func TestConfig_TestScript(t *testing.T) {
+	base := Config{Project: "App", GitHub: GitHubConfig{Owner: "owner", Repo: "repo"}}
+	for _, script := range []string{"", "scripts/ios-test.sh", ".ci/test.sh", "ios/Scripts/run_tests+ui.sh"} {
+		cfg := base
+		cfg.IOS.TestScript = script
+		if err := cfg.Validate(); err != nil {
+			t.Errorf("ios.testScript %q rejected: %v", script, err)
+		}
+	}
+	for _, script := range []string{"/abs/test.sh", "../test.sh", "./test.sh", `scripts\test.sh`, "scripts//test.sh", ".git/hooks/x", "-x.sh", "test.sh\n", "my test.sh", "$(id).sh"} {
+		cfg := base
+		cfg.IOS.TestScript = script
+		err := cfg.Validate()
+		validationErr, ok := err.(*ValidationError)
+		if !ok || validationErr.Field != "ios.testScript" {
+			t.Errorf("ios.testScript %q: Validate() = %v, want an ios.testScript error", script, err)
+		}
+	}
+}
+
+func TestManager_TestScriptRoundTrip(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "builder.json")
+	if err := os.WriteFile(path, []byte(`{
+  "project": "App",
+  "platform": "ios",
+  "github": {"owner": "owner", "repo": "repo"},
+  "ios": {"path": "ios", "testScript": "scripts/ios-test.sh"}
+}`), 0644); err != nil {
+		t.Fatal(err)
+	}
+	mgr := &Manager{path: path}
+	cfg, err := mgr.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.IOS.TestScript != "scripts/ios-test.sh" {
+		t.Fatalf("IOS.TestScript = %q", cfg.IOS.TestScript)
+	}
+	if err := mgr.Save(cfg); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !json.Valid(data) || !bytes.Contains(data, []byte(`"testScript": "scripts/ios-test.sh"`)) {
+		t.Fatalf("saved builder.json = %s", data)
+	}
+	cfg.IOS.TestScript = ""
+	if err := mgr.Save(cfg); err != nil {
+		t.Fatal(err)
+	}
+	if data, _ := os.ReadFile(path); bytes.Contains(data, []byte("testScript")) {
+		t.Fatalf("an unset testScript was written: %s", data)
 	}
 }

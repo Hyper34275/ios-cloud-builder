@@ -4,6 +4,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"os"
@@ -35,6 +36,8 @@ func run(args []string) error {
 		return verifyCheckout(args[1:])
 	case "execute":
 		return execute(args[1:])
+	case "execute-tests":
+		return executeTests(args[1:])
 	case "deploy-testflight":
 		return deployTestFlight(args[1:])
 	default:
@@ -84,6 +87,7 @@ func validateInputs(args []string) error {
 	flags.StringVar(&in.FrameworkHint, "framework-hint", "", "")
 	flags.StringVar(&in.ArtifactRecipient, "artifact-recipient", "", "")
 	flags.StringVar(&in.Operation, "operation", "", "")
+	flags.StringVar(&in.TestScript, "test-script", "", "")
 	if err := flags.Parse(args); err != nil || flags.NArg() != 0 {
 		return fmt.Errorf("invalid validation arguments")
 	}
@@ -165,5 +169,34 @@ func execute(args []string) error {
 		return fmt.Errorf("secure build artifact preparation failed")
 	}
 	fmt.Println("Build succeeded; encrypted artifacts are ready")
+	return nil
+}
+
+// executeTests runs the project's test script. Only the two fixed lines below
+// and a fixed error reach the public job log; the script's own output goes to
+// the private log, which is encrypted with the optional report.
+func executeTests(args []string) error {
+	flags := newFlags("execute-tests")
+	var options runner.TestOptions
+	var recipient, outputDir string
+	flags.StringVar(&options.SourceRoot, "source", "", "")
+	flags.StringVar(&options.IOSPath, "ios-path", "", "")
+	flags.StringVar(&options.Script, "script", "", "")
+	flags.StringVar(&options.LogPath, "log", "", "")
+	flags.StringVar(&options.ReportDir, "report-dir", "", "")
+	flags.DurationVar(&options.Timeout, "timeout", 0, "")
+	flags.StringVar(&recipient, "recipient", "", "")
+	flags.StringVar(&outputDir, "output", "", "")
+	if err := flags.Parse(args); err != nil || flags.NArg() != 0 {
+		return fmt.Errorf("invalid secure test arguments")
+	}
+	fmt.Println("Running project tests; detailed output is private")
+	if err := runner.ExecuteTestsSecure(context.Background(), &options, recipient, outputDir); err != nil {
+		if errors.Is(err, runner.ErrTestsFailed) {
+			return runner.ErrTestsFailed
+		}
+		return fmt.Errorf("secure test artifact preparation failed")
+	}
+	fmt.Println("Tests passed; encrypted report is ready")
 	return nil
 }

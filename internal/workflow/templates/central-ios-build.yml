@@ -57,19 +57,26 @@ on:
         required: true
         type: string
       operation:
-        description: Unsigned local build or protected TestFlight deployment
+        description: Unsigned build, protected TestFlight deployment, or project test run
         required: true
         default: build
         type: choice
         options:
           - build
           - testflight
+          - test
+      test_script:
+        description: Test script path relative to the snapshot root; operation test only
+        required: false
+        default: ''
+        type: string
 
 permissions:
   contents: read
 
 jobs:
   build:
+    if: inputs.operation != 'test'
     runs-on: macos-15
     timeout-minutes: 45
     outputs:
@@ -108,6 +115,7 @@ jobs:
           FRAMEWORK_HINT: ${{ inputs.framework_hint }}
           ARTIFACT_RECIPIENT: ${{ inputs.artifact_recipient }}
           OPERATION: ${{ inputs.operation }}
+          TEST_SCRIPT: ${{ inputs.test_script }}
         run: |
           "$RUNNER_TEMP/builder-runner" validate-inputs \
             --build-id "$BUILD_ID" \
@@ -119,7 +127,8 @@ jobs:
             --configuration "$CONFIGURATION" \
             --framework-hint "$FRAMEWORK_HINT" \
             --artifact-recipient "$ARTIFACT_RECIPIENT" \
-            --operation "$OPERATION"
+            --operation "$OPERATION" \
+            --test-script "$TEST_SCRIPT"
 
       - name: Create repository-scoped GitHub App token
         id: source-token
@@ -344,3 +353,139 @@ jobs:
             exit 1
           fi
           echo "App Store Connect accepted the upload."
+
+  test:
+    if: inputs.operation == 'test'
+    runs-on: macos-26
+    timeout-minutes: 120
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.3.app/Contents/Developer
+
+    steps:
+      - name: Checkout trusted public builder
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          path: builder
+          persist-credentials: false
+
+      - name: Set up trusted Go toolchain
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16
+        with:
+          go-version-file: builder/go.mod
+          cache: false
+
+      - name: Build trusted runner before private checkout
+        working-directory: builder
+        run: |
+          go mod verify
+          go build -trimpath -o "$RUNNER_TEMP/builder-runner" ./cmd/builder-runner
+
+      - name: Validate all dispatch inputs before credential creation
+        env:
+          BUILD_ID: ${{ inputs.build_id }}
+          SOURCE_OWNER: ${{ inputs.source_owner }}
+          SOURCE_REPO: ${{ inputs.source_repo }}
+          SNAPSHOT_REF: ${{ inputs.snapshot_ref }}
+          IOS_PATH: ${{ inputs.ios_path }}
+          SCHEME: ${{ inputs.scheme }}
+          CONFIGURATION: ${{ inputs.configuration }}
+          FRAMEWORK_HINT: ${{ inputs.framework_hint }}
+          ARTIFACT_RECIPIENT: ${{ inputs.artifact_recipient }}
+          OPERATION: ${{ inputs.operation }}
+          TEST_SCRIPT: ${{ inputs.test_script }}
+        run: |
+          "$RUNNER_TEMP/builder-runner" validate-inputs \
+            --build-id "$BUILD_ID" \
+            --source-owner "$SOURCE_OWNER" \
+            --source-repo "$SOURCE_REPO" \
+            --snapshot-ref "$SNAPSHOT_REF" \
+            --ios-path "$IOS_PATH" \
+            --scheme "$SCHEME" \
+            --configuration "$CONFIGURATION" \
+            --framework-hint "$FRAMEWORK_HINT" \
+            --artifact-recipient "$ARTIFACT_RECIPIENT" \
+            --operation "$OPERATION" \
+            --test-script "$TEST_SCRIPT"
+
+      - name: Create repository-scoped GitHub App token
+        id: source-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1
+        with:
+          client-id: ${{ vars.APP_CLIENT_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+          owner: ${{ inputs.source_owner }}
+          repositories: ${{ inputs.source_repo }}
+          permission-contents: read
+          skip-token-revoke: true
+
+      - name: Checkout exactly the authorized private snapshot
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          repository: ${{ inputs.source_owner }}/${{ inputs.source_repo }}
+          ref: ${{ inputs.snapshot_ref }}
+          token: ${{ steps.source-token.outputs.token }}
+          path: source
+          persist-credentials: false
+          fetch-depth: 1
+          fetch-tags: false
+          submodules: false
+          lfs: false
+
+      - name: Revoke private repository token before project code
+        if: always() && steps.source-token.outcome == 'success'
+        env:
+          SOURCE_TOKEN: ${{ steps.source-token.outputs.token }}
+        run: |
+          "$RUNNER_TEMP/builder-runner" revoke-token
+
+      - name: Verify checkout credential cleanup
+        run: |
+          "$RUNNER_TEMP/builder-runner" verify-checkout --source "$GITHUB_WORKSPACE/source"
+
+      - name: Run project tests and encrypt private outputs
+        id: secure-test
+        continue-on-error: true
+        env:
+          IOS_PATH: ${{ inputs.ios_path }}
+          TEST_SCRIPT: ${{ inputs.test_script }}
+          ARTIFACT_RECIPIENT: ${{ inputs.artifact_recipient }}
+        run: |
+          "$RUNNER_TEMP/builder-runner" execute-tests \
+            --source "$GITHUB_WORKSPACE/source" \
+            --ios-path "$IOS_PATH" \
+            --script "$TEST_SCRIPT" \
+            --log "$RUNNER_TEMP/private-output/test.log" \
+            --report-dir "$RUNNER_TEMP/private-output/report" \
+            --timeout 105m \
+            --recipient "$ARTIFACT_RECIPIENT" \
+            --output "$RUNNER_TEMP/encrypted"
+
+      - name: Upload ciphertext only
+        id: upload
+        if: always()
+        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4
+        with:
+          name: ios-builder-${{ inputs.build_id }}
+          path: |
+            ${{ runner.temp }}/encrypted/test.log.age
+            ${{ runner.temp }}/encrypted/report.md.age
+          if-no-files-found: error
+          retention-days: 1
+          include-hidden-files: false
+          compression-level: 0
+
+      - name: Report private test status
+        if: always()
+        env:
+          TEST_OUTCOME: ${{ steps.secure-test.outcome }}
+          UPLOAD_OUTCOME: ${{ steps.upload.outcome }}
+        run: |
+          if [ "$UPLOAD_OUTCOME" != "success" ]; then
+            echo "Encrypted artifact upload failed. No private diagnostics were printed."
+            exit 1
+          fi
+          if [ "$TEST_OUTCOME" != "success" ]; then
+            echo "Tests failed. Download the encrypted report using Builder CLI."
+            exit 1
+          fi
+          echo "Tests passed"

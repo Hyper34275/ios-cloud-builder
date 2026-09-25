@@ -16,6 +16,7 @@ const (
 	PhaseTriggering   Phase = "trigger"
 	PhaseWaitingStart Phase = "waiting"
 	PhaseBuilding     Phase = "building"
+	PhaseTesting      Phase = "testing"
 	PhaseDownloading  Phase = "download"
 )
 
@@ -31,6 +32,7 @@ var phaseInfos = map[Phase]PhaseInfo{
 	PhaseTriggering:   {Name: "Trigger", Icon: "🚀"},
 	PhaseWaitingStart: {Name: "Start", Icon: "⏳"},
 	PhaseBuilding:     {Name: "Build", Icon: "🔨"},
+	PhaseTesting:      {Name: "Test", Icon: "🧪"},
 	PhaseDownloading:  {Name: "Download", Icon: "⬇️"},
 }
 
@@ -41,6 +43,7 @@ type Progress struct {
 	startTime        time.Time
 	currentPhase     Phase
 	workflowURL      string
+	operation        string
 	lastDownloadPct  int
 	lastDownloadTime time.Time
 	mu               sync.Mutex
@@ -55,14 +58,21 @@ func NewProgress(w io.Writer) *Progress {
 
 // Start begins progress tracking for a build
 func (p *Progress) Start(buildID string) {
+	p.StartOperation(buildID, "Build")
+}
+
+// StartOperation begins progress tracking for a named operation, such as
+// "Build" or "Tests", which also names it in the completion line.
+func (p *Progress) StartOperation(buildID, operation string) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
 	p.buildID = buildID
 	p.startTime = time.Now()
+	p.operation = operation
 
 	fmt.Fprintf(p.writer, "\n")
-	fmt.Fprintf(p.writer, "🏗️  Builder - Remote iOS Build\n")
+	fmt.Fprintf(p.writer, "🏗️  Builder - Remote iOS %s\n", operation)
 	fmt.Fprintf(p.writer, "   Build ID: %s\n", buildID)
 	fmt.Fprintf(p.writer, "\n")
 }
@@ -113,6 +123,9 @@ func (p *Progress) UpdateStep(name string, number, total int, elapsed time.Durat
 	defer p.mu.Unlock()
 
 	info := phaseInfos[PhaseBuilding]
+	if p.currentPhase == PhaseTesting {
+		info = phaseInfos[PhaseTesting]
+	}
 	fmt.Fprintf(p.writer, "\r\033[K%s  %s: %s (%d/%d) · %s",
 		info.Icon, info.Name, name, number, total, elapsed.Round(time.Second))
 }
@@ -167,7 +180,11 @@ func (p *Progress) Finish() {
 
 	elapsed := time.Since(p.startTime).Round(time.Second)
 
+	operation := p.operation
+	if operation == "" {
+		operation = "Build"
+	}
 	fmt.Fprintf(p.writer, "\n")
-	fmt.Fprintf(p.writer, "✨ Build complete! Total time: %s\n", elapsed)
+	fmt.Fprintf(p.writer, "✨ %s complete! Total time: %s\n", operation, elapsed)
 	fmt.Fprintf(p.writer, "\n")
 }
