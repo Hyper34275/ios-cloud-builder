@@ -30,34 +30,9 @@ func EncryptArtifactsWithRecipients(logRecipientText, ipaRecipientText, logPath,
 		removePlaintext(logPath, ipaPath)
 		return fmt.Errorf("parse IPA AGE recipient")
 	}
-	if err := os.MkdirAll(outputDir, 0700); err != nil {
+	if err := prepareEncryptedDir(outputDir, "build.log.age", "App.ipa.age"); err != nil {
 		removePlaintext(logPath, ipaPath)
-		return fmt.Errorf("create encrypted artifact directory")
-	}
-	info, err := os.Lstat(outputDir)
-	if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
-		_ = os.Remove(outputDir) // removes a symlink itself, never its target
-		removePlaintext(logPath, ipaPath)
-		return fmt.Errorf("encrypted artifact path is not a private directory")
-	}
-	if err := os.Chmod(outputDir, 0700); err != nil {
-		removePlaintext(logPath, ipaPath)
-		return fmt.Errorf("secure encrypted artifact directory")
-	}
-	if _, err := os.ReadDir(outputDir); err != nil {
-		removePlaintext(logPath, ipaPath)
-		return fmt.Errorf("inspect encrypted artifact directory")
-	}
-	for _, name := range []string{"build.log.age", "build.log.age.partial", "App.ipa.age", "App.ipa.age.partial"} {
-		if err := os.RemoveAll(filepath.Join(outputDir, name)); err != nil {
-			removePlaintext(logPath, ipaPath)
-			return fmt.Errorf("clean encrypted artifact destination")
-		}
-	}
-	entries, err := os.ReadDir(outputDir)
-	if err != nil || len(entries) != 0 {
-		removePlaintext(logPath, ipaPath)
-		return fmt.Errorf("encrypted artifact directory is not empty")
+		return err
 	}
 	if err := encryptAndRemove(logRecipient, logPath, filepath.Join(outputDir, "build.log.age"), false); err != nil {
 		removePlaintext(ipaPath)
@@ -72,6 +47,69 @@ func EncryptArtifactsWithRecipients(logRecipientText, ipaRecipientText, logPath,
 			removePlaintext(ipaPath)
 			return fmt.Errorf("inspect plaintext IPA")
 		}
+	}
+	return nil
+}
+
+// EncryptTestArtifacts encrypts a test run's mandatory private log and its
+// optional report to the caller, then removes both plaintext files even if
+// encryption fails. The output directory ends up containing only test.log.age
+// and, when the script wrote a report, report.md.age.
+func EncryptTestArtifacts(recipientText, logPath, reportPath, outputDir string) error {
+	recipient, err := age.ParseX25519Recipient(recipientText)
+	if err != nil {
+		removePlaintext(logPath, reportPath)
+		return fmt.Errorf("parse diagnostic AGE recipient")
+	}
+	if err := prepareEncryptedDir(outputDir, encryptedTestLogName, encryptedTestReportName); err != nil {
+		removePlaintext(logPath, reportPath)
+		return err
+	}
+	if err := encryptAndRemove(recipient, logPath, filepath.Join(outputDir, encryptedTestLogName), false); err != nil {
+		removePlaintext(reportPath)
+		return err
+	}
+	if reportPath == "" {
+		return nil
+	}
+	if _, statErr := os.Lstat(reportPath); statErr == nil {
+		return encryptAndRemove(recipient, reportPath, filepath.Join(outputDir, encryptedTestReportName), false)
+	} else if !os.IsNotExist(statErr) {
+		removePlaintext(reportPath)
+		return fmt.Errorf("inspect plaintext report")
+	}
+	return nil
+}
+
+// prepareEncryptedDir makes outputDir a private directory that is not a
+// symlink, removes any stale copy of the named ciphertext files, and fails
+// unless the directory is then empty, so nothing planted there can ride along
+// with the upload.
+func prepareEncryptedDir(outputDir string, names ...string) error {
+	if err := os.MkdirAll(outputDir, 0700); err != nil {
+		return fmt.Errorf("create encrypted artifact directory")
+	}
+	info, err := os.Lstat(outputDir)
+	if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+		_ = os.Remove(outputDir) // removes a symlink itself, never its target
+		return fmt.Errorf("encrypted artifact path is not a private directory")
+	}
+	if err := os.Chmod(outputDir, 0700); err != nil {
+		return fmt.Errorf("secure encrypted artifact directory")
+	}
+	if _, err := os.ReadDir(outputDir); err != nil {
+		return fmt.Errorf("inspect encrypted artifact directory")
+	}
+	for _, name := range names {
+		for _, stale := range []string{name, name + ".partial"} {
+			if err := os.RemoveAll(filepath.Join(outputDir, stale)); err != nil {
+				return fmt.Errorf("clean encrypted artifact destination")
+			}
+		}
+	}
+	entries, err := os.ReadDir(outputDir)
+	if err != nil || len(entries) != 0 {
+		return fmt.Errorf("encrypted artifact directory is not empty")
 	}
 	return nil
 }
