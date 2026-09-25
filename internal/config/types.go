@@ -1,6 +1,8 @@
 package config
 
 import (
+	"errors"
+	"fmt"
 	"path"
 	"regexp"
 	"strings"
@@ -13,7 +15,13 @@ var (
 	repositoryPattern = regexp.MustCompile(`^[A-Za-z0-9_.-]{1,100}$`)
 	workflowPattern   = regexp.MustCompile(`^[A-Za-z0-9_.-]+\.ya?ml$`)
 	schemePattern     = regexp.MustCompile(`^$|^[A-Za-z0-9][A-Za-z0-9 ._+()-]{0,127}$`)
+	// testScriptSegmentPattern must match the central runner's rule exactly.
+	testScriptSegmentPattern = regexp.MustCompile(`^[A-Za-z0-9._+][A-Za-z0-9._+-]*$`)
 )
+
+// MaxTestScriptPathLength is the longest test script path the central
+// workflow accepts.
+const MaxTestScriptPathLength = 256
 
 // Backend identifies where a build workflow is executed.
 type Backend string
@@ -82,6 +90,9 @@ type IOSConfig struct {
 	Scheme        string `json:"scheme,omitempty"`        // Xcode scheme to build (auto-detected if empty)
 	Signing       bool   `json:"signing,omitempty"`       // Whether code signing is configured
 	Configuration string `json:"configuration,omitempty"` // Build configuration: Debug (faster) or Release (production)
+	// TestScript is the script `builder ios test` runs on the central builder,
+	// relative to the repository root (e.g. "scripts/ios-test.sh").
+	TestScript string `json:"testScript,omitempty"`
 }
 
 // MobAIConfig holds MobAI settings for local development
@@ -183,6 +194,46 @@ func (c *Config) Validate() error {
 	}
 	if c.IOS.Configuration != "" && c.IOS.Configuration != "Debug" && c.IOS.Configuration != "Release" {
 		return &ValidationError{Field: "ios.configuration", Message: "must be Debug or Release"}
+	}
+	if c.IOS.TestScript != "" {
+		if err := ValidateTestScriptPath(c.IOS.TestScript); err != nil {
+			return &ValidationError{Field: "ios.testScript", Message: err.Error()}
+		}
+	}
+	return nil
+}
+
+// ValidateTestScriptPath applies the central workflow's test_script rule
+// locally, so a bad path fails before anything is snapshotted or dispatched:
+// a clean path relative to the repository root, using forward slashes, with
+// no traversal, Git metadata, control characters, or unusual characters.
+func ValidateTestScriptPath(value string) error {
+	switch {
+	case value == "":
+		return errors.New("is required")
+	case len(value) > MaxTestScriptPathLength:
+		return fmt.Errorf("is longer than %d bytes", MaxTestScriptPathLength)
+	case strings.HasPrefix(value, "/"):
+		return errors.New("must be relative to the repository root, like scripts/test.sh")
+	case strings.Contains(value, `\`):
+		return errors.New("must use forward slashes, like scripts/test.sh")
+	case strings.IndexFunc(value, func(r rune) bool { return r < 0x20 || r == 0x7f }) >= 0:
+		return errors.New("must not contain control characters")
+	}
+	for _, segment := range strings.Split(value, "/") {
+		switch {
+		case segment == "..":
+			return errors.New("must stay inside the repository")
+		case strings.EqualFold(segment, ".git"): // APFS is case-insensitive by default
+			return errors.New("must not point into Git metadata")
+		case segment == "" || segment == ".":
+			return errors.New("must be a clean path without ./, // or a trailing /")
+		case !testScriptSegmentPattern.MatchString(segment):
+			return errors.New("may contain only letters, digits, '.', '_', '+', '-' and '/', and no path segment may start with '-'")
+		}
+	}
+	if path.Clean(value) != value {
+		return errors.New("must be a clean path without ./, // or a trailing /")
 	}
 	return nil
 }
