@@ -1,6 +1,6 @@
 # iOS Cloud Builder
 
-Build unsigned iOS applications, run their test suites, or deploy signed releases to TestFlight, from Linux, WSL, or Windows using a narrowly scoped remote macOS build. This is a truthful open-source remote-build/orchestration project derived from [MobAI-App/ios-builder](https://github.com/MobAI-App/ios-builder), not a generic compute service or a disguised workload.
+Build unsigned iOS applications, run their test suites, or deploy signed releases to TestFlight, from Linux, WSL, or Windows using a narrowly scoped remote macOS build. The same privacy model runs a private application's Windows test suite on a Windows runner and returns the Windows build it produces, such as an installer. This is a truthful open-source remote-build/orchestration project derived from [MobAI-App/ios-builder](https://github.com/MobAI-App/ios-builder), not a generic compute service or a disguised workload.
 
 The central backend lets multiple private application repositories use one public builder repository without committing private source or publishing plaintext output:
 
@@ -34,9 +34,9 @@ The original repository backend remains available for existing MobAI users and r
 - The signing job never checks out private source and never runs project scripts or dependencies.
 - Detailed dependency/compiler output is redirected to a private log from process start.
 - Build logs and locally downloaded IPAs are encrypted to the caller's local-only AGE identity. TestFlight intermediates use a distinct AGE identity held by the protected Environment.
-- The public artifact contains only `App.ipa.age` and `build.log.age` (for a test run, `test.log.age` and `report.md.age`), is retained for one day, and is deleted early when local retrieval succeeds.
+- The public artifact contains only `App.ipa.age` and `build.log.age` (for a test run, `test.log.age` and `report.md.age`, plus `artifact.age` for a passing Windows run that requested one), is retained for one day, and is deleted early when local retrieval succeeds. After a test run whose tests passed and whose outputs were all decrypted, the CLI also deletes the workflow run itself; a run that did not pass is kept for inspection.
 - Central mode creates no Actions caches and uploads no DerivedData, dSYM, archive, source, or plaintext diagnostics.
-- Inputs are validated before credential creation; build commands use fixed argv arrays, never `eval`. The only script the workflow runs is the test script of `builder ios test`: a validated path to a file inside the snapshot, never a command string.
+- Inputs are validated before credential creation; build commands use fixed argv arrays, never `eval`. The only script the workflow runs is the test script of `builder ios test` or `builder windows test`: a validated path to a file inside the snapshot, never a command string.
 - Full UUIDv4 correlation binds the workflow run and artifact to one build.
 
 These controls protect against accidental public disclosure; they do not sandbox intentionally malicious private project code or hide plaintext from GitHub's active runner. Read the full [threat model](docs/THREAT_MODEL.md).
@@ -50,7 +50,7 @@ Local workstation (Linux/WSL/macOS; Windows through PowerShell/WSL):
 - A Git remote using an explicit `github.com` HTTPS or SSH URL
 - Builder CLI
 
-Builds use the stable `macos-15` runner image and test runs use `macos-26`; both select Xcode 26.3. No local Mac, Xcode, certificate, or provisioning profile is required for an unsigned central build. TestFlight deployment requires an Apple Distribution certificate, one or more App Store distribution provisioning profiles, and an App Store Connect API key.
+Builds use the stable `macos-15` runner image and test runs use `macos-26`; both select Xcode 26.3. Windows test runs use `windows-2025`. No local Mac, Xcode, certificate, or provisioning profile is required for an unsigned central build. TestFlight deployment requires an Apple Distribution certificate, one or more App Store distribution provisioning profiles, and an App Store Connect API key.
 
 ## Install the CLI
 
@@ -286,7 +286,9 @@ The script is a file in the repository, named relative to the repository root wi
 ./dist/ios-test-<build-id>.md    the script's report.md, when it wrote one
 ```
 
-The command exits non-zero when the tests failed. `builder ios logs <build-id>` retrieves both files again while the one-day artifact exists. The public builder's default branch must contain a workflow with the `test` operation; an older workflow rejects the dispatch.
+The command exits non-zero when the tests failed. The public builder's default branch must contain a workflow with the `test` operation; an older workflow rejects the dispatch.
+
+After the tests pass and both files are decrypted, the command deletes the encrypted artifact and then the whole workflow run from the public builder, so nothing of the run stays there; `--keep-run` keeps both. When anything did not pass (the script exited non-zero or timed out, or the outputs could not be downloaded or decrypted), the run and its encrypted artifact are kept and the run URL is printed; `builder ios logs <build-id>` retrieves the files again while the one-day artifact exists. Deletion needs write access to the builder repository (see [Cleanup and token scopes](#cleanup-and-token-scopes)); if it fails, the command prints a warning with the run URL and still exits with the test result. The private snapshot ref is deleted either way.
 
 ### Script contract
 
@@ -323,6 +325,76 @@ exit "$status"
 - The log and `report.md` are encrypted to your local AGE identity before upload. The artifact `ios-builder-<build-id>` contains only `test.log.age` and `report.md.age`.
 - The public run shows the dispatch inputs (including the script path) and only `Tests passed` or `Tests failed. Download the encrypted report using Builder CLI.`
 - Environment scrubbing prevents accidental publication, not deliberate exfiltration by the script; see the [threat model](docs/THREAT_MODEL.md).
+
+## Windows builds and tests
+
+`builder windows test` runs a private project's Windows test script on the public builder's `windows-2025` runner, with the same privacy model as an iOS test run, and can return one file the script builds, such as an installer:
+
+```bash
+builder windows test                                  # windows.testScript and windows.artifact
+builder windows test --script scripts/windows-test.ps1 --artifact dist/Setup.exe --timeout 2h30m -o dist
+builder windows test --keep-run                       # keep the public run after a pass
+builder windows test --artifact=                      # run the tests without fetching an artifact
+```
+
+Set the defaults once in `builder.json`; the flags override them. The section is optional, and configurations without it are unaffected:
+
+```json
+"windows": { "testScript": "scripts/windows-test.ps1", "artifact": "dist/Setup.exe" }
+```
+
+The command snapshots and dispatches like `ios test` (with `operation: windows-test`, `test_script`, and `artifact_path`), downloads the encrypted results as a stream to disk, decrypts them locally, prints the report, and writes:
+
+```text
+./dist/windows-test-<build-id>.log   everything the script printed
+./dist/windows-test-<build-id>.md    the script's report.md, when it wrote one
+./dist/Setup.exe                     the artifact, under its base name, after a pass
+```
+
+It exits non-zero when the tests failed, including when the script passed but the artifact is missing or unusable. If the decrypted artifact would land inside the repository where `.gitignore` does not exclude it, the command warns first: the next snapshot would push it, and GitHub rejects files over 100 MB.
+
+### Windows script contract
+
+- The script is a `.ps1` or `.sh` file in the repository, with the same path rules as the iOS test script. A `.ps1` runs as `pwsh -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File <script>` (PowerShell 7); a `.sh` runs as `bash -- <script>` with Git for Windows' bash. The working directory is the snapshot root, and the runner account is an administrator, so the script may install, run and uninstall what it builds.
+- It receives `BUILDER_SOURCE_DIR` (the snapshot root) and `BUILDER_REPORT_DIR` (an empty private directory for an optional `report.md`, of which the first 1 MiB is kept). `BUILDER_IOS_PATH` is not set.
+- Exit status `0` means the tests passed; anything else, a timeout, or a script that cannot start means they failed. Use `exit 1` explicitly: a `.ps1` that ends without `exit` reports `0` even after a failed native command unless it checks `$LASTEXITCODE`.
+- The artifact is a path relative to the snapshot root, with the same rules. It is read only after the script exited `0`, and only if it resolves, symlinks included, to a regular non-empty file of at most 1 GiB inside the snapshot and outside `.git`. It is streamed through AGE encryption into `artifact.age`; a failing script never produces one. A missing or unusable artifact fails the run and the reason is in the log.
+- The script runs in a Windows job object: it starts suspended, joins the job, and only then runs, so every process it starts is in the job. When the script exits, or after 135 minutes (the job's own limit is 150), the whole job is terminated, including MSBuild node-reuse workers, the Roslyn compiler server, and dotnet build servers, and the runner waits until none of them holds the log open.
+- The environment and its scrubbing are the iOS test's: the runner's normal environment (`PATH`, Visual Studio and the preinstalled SDKs, `CI=true`, `RUNNER_TEMP`) minus the file-command variables, `GITHUB_TOKEN`, every `ACTIONS_*` and `INPUT_*` variable, and any name containing `TOKEN`, `SECRET`, `PASSWORD`, `PASSWD`, `PRIVATE_KEY`, `CREDENTIAL` or `AGE_IDENTITY`, compared case-insensitively as Windows does.
+- The job installs nothing for the project. If the image lacks a toolchain the project needs, such as a newer .NET SDK, the script installs it (for example with `dotnet-install.ps1`).
+- Git for Windows checks the snapshot out with CRLF line endings unless `.gitattributes` says otherwise. PowerShell does not mind; a `.sh` script needs `*.sh text eol=lf`.
+
+For example:
+
+```powershell
+$ErrorActionPreference = 'Stop'
+Set-Location $env:BUILDER_SOURCE_DIR
+dotnet test App.sln -c Release --logger "trx;LogFileName=results.trx"
+$status = $LASTEXITCODE
+if ($status -eq 0) { & ./scripts/build-installer.ps1 -Output dist/Setup.exe; $status = $LASTEXITCODE }
+"# Windows tests`n`n``dotnet test`` and the installer build exited with $status." |
+  Set-Content -LiteralPath (Join-Path $env:BUILDER_REPORT_DIR 'report.md')
+exit $status
+```
+
+### Windows privacy model
+
+- Checkout, token revocation, and credential verification are the iOS jobs', in PowerShell: every input reaches the trusted runner as one quoted `--name=value` argument, and PowerShell is used instead of Git Bash so no MSYS path conversion rewrites a value.
+- The script's output goes straight to the private log; the public run prints only `Tests passed` or `Tests failed. Download the encrypted report using Builder CLI.`
+- The artifact `ios-builder-<build-id>` contains only `test.log.age`, `report.md.age`, and `artifact.age`, encrypted to your local AGE identity, with one-day retention and no compression. The plaintext artifact never leaves the runner's private checkout.
+- The job has no Environment, no Apple secrets, and no secret besides the App key used to mint the checkout token.
+- The public run shows the dispatch inputs, including the script and artifact paths. After a pass the CLI deletes the run; see below.
+
+### Cleanup and token scopes
+
+A test run leaves nothing behind in the public builder when its tests pass: after downloading and decrypting every output, `builder ios test` and `builder windows test` delete the encrypted artifact (`DELETE /repos/{owner}/{repo}/actions/artifacts/{id}`) and then the workflow run with its logs (`DELETE /repos/{owner}/{repo}/actions/runs/{run_id}`), retrying for up to about 30 seconds while GitHub still finishes the run. `--keep-run` skips this. A run whose tests did not pass, whose artifact was missing, or whose outputs could not be downloaded or decrypted is kept, with its encrypted artifact for one day, so it can be inspected and retrieved again; the command prints its URL. The temporary snapshot ref in the private repository is always deleted.
+
+Deleting runs and artifacts needs write access to the builder repository. The CLI uses the first token it finds in `BUILDER_GITHUB_TOKEN`, `GH_TOKEN`, `GITHUB_TOKEN`, the GitHub CLI (`gh auth token`), or the token from `builder auth github`; `builder central doctor` shows which. Deletion needs the `repo` scope, which `builder auth github` (`repo workflow`) and a default GitHub CLI login both have. If deletion fails, the command prints a warning with the run URL and still exits with the test result. To fix it:
+
+- GitHub CLI token without `repo`: `gh auth refresh -h github.com -s repo,workflow`
+- Builder's own token: `builder auth github` again
+- Fine-grained token: grant it **Actions: Read and write** on the builder repository (dispatching needs it too)
+- Or delete the run by hand from its page (the ... menu, **Delete workflow run**)
 
 ## Supported projects
 
@@ -391,12 +463,13 @@ go build ./cmd/builder-runner
 
 - A one-time GitHub App browser setup and private-repository selection cannot be completed safely by the CLI alone.
 - Repository/source names and workflow inputs are public metadata even though source contents and outputs are encrypted.
-- A malicious project, dependency, or test script runs as the runner user and is not strongly sandboxed.
+- A malicious project, dependency, or test script runs as the runner user and is not strongly sandboxed. On Windows that user is an administrator, and a deliberately hostile script can start processes outside its job object (through a service, a scheduled task, or WMI).
 - The central hosted-runner design has the policy caveat described in [COMPLIANCE.md](COMPLIANCE.md).
 - Central TestFlight supports multiple top-level applications by exact Bundle ID and signs their `PlugIns` app extensions, but still rejects Watch apps, App Clips, XPC services, ExtensionKit extensions, and bundles nested inside an extension.
 - A successful upload means App Store Connect accepted the binary; it does not mean Apple's asynchronous processing or review has completed.
 - Private GitHub SSH aliases are rejected in central mode because the CLI cannot prove an alias resolves to GitHub; use an explicit `git@github.com:OWNER/REPO.git` or `https://github.com/OWNER/REPO.git` remote.
-- Failed artifact deletion is non-fatal; ciphertext expires after one day.
+- Failed artifact deletion is non-fatal; ciphertext expires after one day. A test run that did not pass is kept on purpose, and a run whose deletion failed stays until it is deleted by hand or expires with the repository's log retention.
+- `builder ios logs <build-id>` retrieves a Windows run's log and report, not its artifact; rerun `builder windows test` for a fresh artifact.
 
 ## License
 
