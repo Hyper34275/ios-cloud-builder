@@ -393,6 +393,8 @@ func boundTestLog(path string, limit, head int64) (retErr error) {
 	if err := bounded.Close(); err != nil {
 		return fmt.Errorf("finish bounded test log")
 	}
+	// Windows cannot replace a file that is still open.
+	_ = source.Close()
 	if err := os.Rename(temporary, path); err != nil {
 		return fmt.Errorf("replace test log")
 	}
