@@ -26,6 +26,9 @@ const (
 
 	// IPAArtifactName is the name of the IPA artifact uploaded by the workflow.
 	IPAArtifactName = build.IPAArtifactName
+
+	// DefaultTestTimeout is the default wait for a central test run.
+	DefaultTestTimeout = build.DefaultTestTimeout
 )
 
 type (
@@ -34,6 +37,9 @@ type (
 	BuildResult  = build.BuildResult
 	ShareOptions = build.ShareOptions
 	ShareResult  = build.ShareResult
+	TestOptions  = build.TestOptions
+	TestResult   = build.TestResult
+	Diagnostics  = build.Diagnostics
 )
 
 // NewCoordinator creates a build coordinator that reports progress on stdout.
