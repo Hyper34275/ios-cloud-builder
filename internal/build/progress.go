@@ -61,9 +61,15 @@ func (p *Progress) Start(buildID string) {
 	p.StartOperation(buildID, "Build")
 }
 
-// StartOperation begins progress tracking for a named operation, such as
+// StartOperation begins progress tracking for a named iOS operation, such as
 // "Build" or "Tests", which also names it in the completion line.
 func (p *Progress) StartOperation(buildID, operation string) {
+	p.StartPlatformOperation(buildID, "iOS", operation)
+}
+
+// StartPlatformOperation is StartOperation for a platform other than iOS,
+// such as "Windows".
+func (p *Progress) StartPlatformOperation(buildID, platform, operation string) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
@@ -72,7 +78,7 @@ func (p *Progress) StartOperation(buildID, operation string) {
 	p.operation = operation
 
 	fmt.Fprintf(p.writer, "\n")
-	fmt.Fprintf(p.writer, "🏗️  Builder - Remote iOS %s\n", operation)
+	fmt.Fprintf(p.writer, "🏗️  Builder - Remote %s %s\n", platform, operation)
 	fmt.Fprintf(p.writer, "   Build ID: %s\n", buildID)
 	fmt.Fprintf(p.writer, "\n")
 }

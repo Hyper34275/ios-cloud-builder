@@ -95,8 +95,8 @@ func TestParseEncryptedTestArtifactExactMembers(t *testing.T) {
 	if _, err := parseEncryptedArtifact(makeZIP(t, map[string][]byte{centralTestLogFile: []byte("c")})); err == nil {
 		t.Fatal("parseEncryptedArtifact() accepted a test artifact")
 	}
-	if !isTestArtifact(makeZIP(t, map[string][]byte{centralTestLogFile: []byte("c")})) ||
-		isTestArtifact(makeZIP(t, map[string][]byte{centralLogFile: []byte("c")})) || isTestArtifact([]byte("not a zip")) {
+	if !isTestArtifact(zipReader(t, makeZIP(t, map[string][]byte{centralTestLogFile: []byte("c")}))) ||
+		isTestArtifact(zipReader(t, makeZIP(t, map[string][]byte{centralLogFile: []byte("c")}))) {
 		t.Fatal("isTestArtifact() misclassified an artifact")
 	}
 }
@@ -111,7 +111,7 @@ func TestSaveTestOutputsWritesPrivateLogAndReport(t *testing.T) {
 	saved, err := saveTestOutputs(identity, &encryptedTestArtifact{
 		log:    encryptForTest(t, identity, "private test log"),
 		report: encryptForTest(t, identity, "# Report\n"),
-	}, output, buildID)
+	}, output, buildID, PlatformIOS)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -132,7 +132,7 @@ func TestSaveTestOutputsWritesPrivateLogAndReport(t *testing.T) {
 		t.Fatalf("report = %q", saved.report)
 	}
 
-	logOnly, err := saveTestOutputs(identity, &encryptedTestArtifact{log: encryptForTest(t, identity, "log")}, t.TempDir(), buildID)
+	logOnly, err := saveTestOutputs(identity, &encryptedTestArtifact{log: encryptForTest(t, identity, "log")}, t.TempDir(), buildID, PlatformIOS)
 	if err != nil || logOnly.ReportPath != "" || logOnly.report != nil {
 		t.Fatalf("saveTestOutputs(log only) = %#v, %v", logOnly, err)
 	}
@@ -141,7 +141,7 @@ func TestSaveTestOutputsWritesPrivateLogAndReport(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := saveTestOutputs(other, &encryptedTestArtifact{log: encryptForTest(t, identity, "log")}, t.TempDir(), buildID); err == nil {
+	if _, err := saveTestOutputs(other, &encryptedTestArtifact{log: encryptForTest(t, identity, "log")}, t.TempDir(), buildID, PlatformIOS); err == nil {
 		t.Fatal("ciphertext for another recipient was accepted")
 	}
 }
@@ -153,16 +153,24 @@ func TestSaveDiagnosticsRecognizesTestAndBuildArtifacts(t *testing.T) {
 	}
 	buildID := "123e4567-e89b-42d3-a456-426614174000"
 	output := t.TempDir()
-	testRun, err := saveDiagnostics(identity, makeZIP(t, map[string][]byte{
+	testRun, err := saveDiagnostics(identity, zipReader(t, makeZIP(t, map[string][]byte{
 		centralTestLogFile: encryptForTest(t, identity, "test log"),
 		centralReportFile:  encryptForTest(t, identity, "report"),
-	}), output, buildID)
+	})), output, buildID, PlatformIOS)
 	if err != nil || filepath.Base(testRun.LogPath) != "ios-test-"+buildID+".log" || filepath.Base(testRun.ReportPath) != "ios-test-"+buildID+".md" {
 		t.Fatalf("saveDiagnostics(test) = %#v, %v", testRun, err)
 	}
-	buildRun, err := saveDiagnostics(identity, makeZIP(t, map[string][]byte{
+	// A Windows run's diagnostics are named for Windows; its artifact is not restored.
+	windowsRun, err := saveDiagnostics(identity, zipReader(t, makeZIP(t, map[string][]byte{
+		centralTestLogFile:  encryptForTest(t, identity, "test log"),
+		centralArtifactFile: encryptForTest(t, identity, "MZ"),
+	})), output, buildID, PlatformWindows)
+	if err != nil || filepath.Base(windowsRun.LogPath) != "windows-test-"+buildID+".log" || windowsRun.ReportPath != "" {
+		t.Fatalf("saveDiagnostics(windows test) = %#v, %v", windowsRun, err)
+	}
+	buildRun, err := saveDiagnostics(identity, zipReader(t, makeZIP(t, map[string][]byte{
 		centralLogFile: encryptForTest(t, identity, "build log"),
-	}), output, buildID)
+	})), output, buildID, PlatformIOS)
 	if err != nil || filepath.Base(buildRun.LogPath) != "ios-builder-"+buildID+".log" || buildRun.ReportPath != "" {
 		t.Fatalf("saveDiagnostics(build) = %#v, %v", buildRun, err)
 	}

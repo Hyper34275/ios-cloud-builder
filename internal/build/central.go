@@ -31,7 +31,7 @@ const (
 	centralLogFile        = "build.log.age"
 	centralTestLogFile    = "test.log.age"
 	centralReportFile     = "report.md.age"
-	centralTestOutputName = "ios-test"
+	centralArtifactFile   = "artifact.age"
 
 	maxArtifactArchiveSize = int64(1024*1024*1024 + 80*1024*1024)
 	maxIPACiphertextSize   = int64(1024 * 1024 * 1024)
@@ -47,36 +47,6 @@ const (
 type encryptedArtifact struct {
 	ipa []byte
 	log []byte
-}
-
-type encryptedTestArtifact struct {
-	log    []byte
-	report []byte
-}
-
-// DefaultTestTimeout is how long `builder ios test` waits by default,
-// including queueing; the workflow's test job itself is limited to 120 minutes.
-const DefaultTestTimeout = 2 * time.Hour
-
-// TestOptions controls a central test run.
-type TestOptions struct {
-	OutputDir string
-	Timeout   time.Duration
-	Remote    string // Git remote to push the working-tree snapshot to
-	Script    string // test script, relative to the repository root
-}
-
-// TestResult describes a completed central test run. Passed is false when the
-// script failed; its decrypted log and report are saved either way.
-type TestResult struct {
-	BuildID     string
-	Passed      bool
-	Conclusion  string
-	LogPath     string
-	ReportPath  string // empty when the script wrote no report.md
-	Report      []byte // decrypted report.md
-	Duration    time.Duration
-	WorkflowURL string
 }
 
 // Diagnostics are the decrypted files retrieved for one central run.
@@ -260,86 +230,6 @@ func (c *Coordinator) awaitCentralRun(ctx context.Context, remote, buildID strin
 	return completed, nil
 }
 
-// Test runs the project's test script on the central builder and retrieves
-// its encrypted log and optional report. Failing tests are not an error: the
-// result has Passed false and the decrypted diagnostics are saved either way.
-func (c *Coordinator) Test(parent context.Context, opts TestOptions) (*TestResult, error) {
-	started := time.Now()
-	if !c.config.IsCentral() {
-		return nil, errors.New("`builder ios test` requires backend=central")
-	}
-	if opts.Timeout == 0 {
-		opts.Timeout = DefaultTestTimeout
-	}
-	ctx, cancel := context.WithTimeout(parent, opts.Timeout)
-	defer cancel()
-
-	buildID := uuid.NewString()
-	result := &TestResult{BuildID: buildID}
-	c.progress.StartOperation(buildID, "Tests")
-
-	if err := c.config.Validate(); err != nil {
-		return result, err
-	}
-	if err := config.ValidateTestScriptPath(opts.Script); err != nil {
-		return result, fmt.Errorf("invalid test script: %w", err)
-	}
-	identity, err := centralIdentity(c.config)
-	if err != nil {
-		return result, err
-	}
-	if err := snapshot.VerifyRemote(ctx, opts.Remote, c.config.GitHub.Owner, c.config.GitHub.Repo); err != nil {
-		return result, fmt.Errorf("verify private source remote: %w", err)
-	}
-
-	owner, repo := c.config.Builder.Owner, c.config.Builder.Repo
-	inputs := centralTestDispatchInputs(c.config, buildID, snapshot.Ref(buildID), opts.Script)
-	run, err := c.awaitCentralRun(ctx, opts.Remote, buildID, inputs, opts.Timeout, PhaseTesting, "Running tests securely on the central runner...")
-	if run != nil {
-		result.WorkflowURL = run.HTMLURL
-	}
-	if err != nil {
-		return result, err
-	}
-	result.Conclusion = run.Conclusion
-
-	artifact, err := c.github.PollForRunArtifact(ctx, owner, repo, run.ID, centralArtifactPrefix+buildID, artifactIndexTimeout)
-	if err != nil {
-		c.progress.Error(PhaseTesting, err)
-		return result, fmt.Errorf("workflow concluded %s without an encrypted test artifact: %w", run.Conclusion, err)
-	}
-	defer c.deleteCentralArtifact(owner, repo, artifact.ID)
-
-	c.progress.Update(PhaseDownloading, "Downloading encrypted test report...")
-	data, err := c.downloadCentralArtifactData(ctx, owner, repo, artifact)
-	if err != nil {
-		c.progress.Error(PhaseDownloading, err)
-		return result, err
-	}
-	contents, err := parseEncryptedTestArtifact(data)
-	if err != nil {
-		c.progress.Error(PhaseDownloading, err)
-		return result, err
-	}
-	saved, err := saveTestOutputs(identity, contents, opts.OutputDir, buildID)
-	if err != nil {
-		c.progress.Error(PhaseDownloading, err)
-		return result, err
-	}
-	result.LogPath, result.ReportPath, result.Report = saved.LogPath, saved.ReportPath, saved.report
-	result.Passed = run.Conclusion == "success"
-	result.Duration = time.Since(started)
-	if result.Passed {
-		c.progress.Complete(PhaseTesting, "Tests passed")
-		c.progress.Complete(PhaseDownloading, "Log and report decrypted")
-		c.progress.Finish()
-	} else {
-		c.progress.Complete(PhaseDownloading, "Log and report decrypted")
-		c.progress.Error(PhaseTesting, fmt.Errorf("tests failed (workflow concluded %s)", run.Conclusion))
-	}
-	return result, nil
-}
-
 // DownloadLogs retrieves and decrypts the diagnostic log for an exact central
 // build ID and returns its path. See DownloadDiagnostics.
 func (c *Coordinator) DownloadLogs(ctx context.Context, buildID, outputDir string) (string, error) {
@@ -352,8 +242,9 @@ func (c *Coordinator) DownloadLogs(ctx context.Context, buildID, outputDir strin
 
 // DownloadDiagnostics retrieves and decrypts the diagnostics for an exact
 // central build ID: the build or deployment log, or a test run's log and
-// report. It is used by `builder ios logs <build-id>` and deliberately does
-// not support repository-backend artifacts, which are plaintext upstream.
+// report (an iOS or Windows run; a Windows run's artifact is not restored).
+// It is used by `builder ios logs <build-id>` and deliberately does not
+// support repository-backend artifacts, which are plaintext upstream.
 func (c *Coordinator) DownloadDiagnostics(ctx context.Context, buildID, outputDir string) (*Diagnostics, error) {
 	if !c.config.IsCentral() {
 		return nil, errors.New("encrypted build logs are available only for the central backend")
@@ -381,11 +272,21 @@ func (c *Coordinator) DownloadDiagnostics(ctx context.Context, buildID, outputDi
 	if err != nil {
 		return nil, err
 	}
-	data, err := c.downloadCentralArtifactData(ctx, owner, repo, artifact)
+	archivePath, err := c.downloadCentralArtifactFile(ctx, c.github, owner, repo, artifact, outputDir)
 	if err != nil {
 		return nil, err
 	}
-	diagnostics, err := saveDiagnostics(identity, data, outputDir, buildID)
+	defer func() { _ = os.Remove(archivePath) }()
+	archive, err := zip.OpenReader(archivePath)
+	if err != nil {
+		return nil, fmt.Errorf("open artifact ZIP: %w", err)
+	}
+	defer func() { _ = archive.Close() }()
+	platform := PlatformIOS
+	if run.DisplayTitle == github.WindowsTestRunTitlePrefix+buildID {
+		platform = PlatformWindows
+	}
+	diagnostics, err := saveDiagnostics(identity, &archive.Reader, outputDir, buildID, platform)
 	if err != nil {
 		return nil, err
 	}
@@ -395,24 +296,35 @@ func (c *Coordinator) DownloadDiagnostics(ctx context.Context, buildID, outputDi
 
 // saveDiagnostics decrypts a downloaded artifact's diagnostics into
 // outputDir. A test run's artifact carries test.log.age; every other central
-// artifact carries build.log.age.
-func saveDiagnostics(identity age.Identity, data []byte, outputDir, buildID string) (*Diagnostics, error) {
-	if isTestArtifact(data) {
-		contents, err := parseEncryptedTestArtifact(data)
+// artifact carries build.log.age. A Windows run's artifact.age is left alone.
+func saveDiagnostics(identity age.Identity, archive *zip.Reader, outputDir, buildID string, platform TestPlatform) (*Diagnostics, error) {
+	if isTestArtifact(archive) {
+		members, err := testArtifactMembers(archive, true)
 		if err != nil {
 			return nil, err
 		}
-		saved, err := saveTestOutputs(identity, contents, outputDir, buildID)
+		contents, err := readTestLogAndReport(members)
+		if err != nil {
+			return nil, err
+		}
+		saved, err := saveTestOutputs(identity, contents, outputDir, buildID, platform)
 		if err != nil {
 			return nil, err
 		}
 		return &saved.Diagnostics, nil
 	}
-	contents, err := parseEncryptedArtifact(data)
+	members, err := ciphertextMembers(archive, map[string]int64{
+		centralIPAFile: maxIPACiphertextSize,
+		centralLogFile: maxLogCiphertextSize,
+	}, centralLogFile)
 	if err != nil {
 		return nil, err
 	}
-	path, err := decryptLogToFile(identity, contents.log, outputDir, buildID)
+	log, err := readBoundedZipFile(members[centralLogFile], maxLogCiphertextSize)
+	if err != nil {
+		return nil, err
+	}
+	path, err := decryptLogToFile(identity, log, outputDir, buildID)
 	if err != nil {
 		return nil, err
 	}
@@ -460,26 +372,6 @@ func centralDispatchInputs(cfg *config.Config, buildID, ref string, testFlight b
 	return inputs
 }
 
-// centralTestDispatchInputs sends only what the test job reads. Scheme,
-// configuration, and framework keep their workflow defaults, which exposes
-// less project metadata in the public run.
-func centralTestDispatchInputs(cfg *config.Config, buildID, ref, script string) map[string]string {
-	inputs := map[string]string{
-		"build_id":           buildID,
-		"source_owner":       cfg.GitHub.Owner,
-		"source_repo":        cfg.GitHub.Repo,
-		"snapshot_ref":       ref,
-		"ios_path":           ".",
-		"artifact_recipient": strings.TrimSpace(cfg.Security.Recipient),
-		"operation":          "test",
-		"test_script":        script,
-	}
-	if cfg.IOS.Path != "" {
-		inputs["ios_path"] = cfg.IOS.Path
-	}
-	return inputs
-}
-
 func frameworkHint(cfg *config.Config) string {
 	switch {
 	case cfg.ReactNative.Expo:
@@ -520,6 +412,14 @@ func (c *Coordinator) downloadCentralArtifactData(ctx context.Context, owner, re
 }
 
 func verifyArtifactDigest(digest string, data []byte) error {
+	actual := sha256.Sum256(data)
+	return verifyArtifactDigestSum(digest, actual[:])
+}
+
+// verifyArtifactDigestSum compares GitHub's "sha256:<hex>" artifact digest
+// with the SHA-256 of the downloaded archive. An artifact without a digest is
+// accepted, as older artifacts have none.
+func verifyArtifactDigestSum(digest string, actual []byte) error {
 	if digest == "" {
 		return nil
 	}
@@ -531,8 +431,7 @@ func verifyArtifactDigest(digest string, data []byte) error {
 	if err != nil {
 		return fmt.Errorf("artifact API returned malformed SHA-256 digest")
 	}
-	actual := sha256.Sum256(data)
-	if !bytes.Equal(expected, actual[:]) {
+	if !bytes.Equal(expected, actual) {
 		return errors.New("downloaded artifact SHA-256 digest does not match GitHub metadata")
 	}
 	return nil
@@ -549,33 +448,6 @@ func parseEncryptedArtifact(data []byte) (*encryptedArtifact, error) {
 	return &encryptedArtifact{ipa: members[centralIPAFile], log: members[centralLogFile]}, nil
 }
 
-// parseEncryptedTestArtifact accepts exactly a test run's ciphertext: the
-// mandatory test.log.age and an optional report.md.age.
-func parseEncryptedTestArtifact(data []byte) (*encryptedTestArtifact, error) {
-	members, err := parseCiphertextArtifact(data, map[string]int64{
-		centralTestLogFile: maxLogCiphertextSize,
-		centralReportFile:  maxReportSize,
-	}, centralTestLogFile)
-	if err != nil {
-		return nil, err
-	}
-	return &encryptedTestArtifact{log: members[centralTestLogFile], report: members[centralReportFile]}, nil
-}
-
-// isTestArtifact reports whether an artifact ZIP holds a test run's log.
-func isTestArtifact(data []byte) bool {
-	zr, err := zip.NewReader(bytes.NewReader(data), int64(len(data)))
-	if err != nil {
-		return false
-	}
-	for _, file := range zr.File {
-		if file.Name == centralTestLogFile {
-			return true
-		}
-	}
-	return false
-}
-
 // parseCiphertextArtifact reads an artifact ZIP that may contain only the
 // allowed members, each once and within its size limit, and must contain the
 // required one.
@@ -587,10 +459,27 @@ func parseCiphertextArtifact(data []byte, allowed map[string]int64, required str
 	if err != nil {
 		return nil, fmt.Errorf("open artifact ZIP: %w", err)
 	}
+	files, err := ciphertextMembers(zr, allowed, required)
+	if err != nil {
+		return nil, err
+	}
+	members := make(map[string][]byte, len(files))
+	for name, file := range files {
+		if members[name], err = readBoundedZipFile(file, allowed[name]); err != nil {
+			return nil, err
+		}
+	}
+	return members, nil
+}
+
+// ciphertextMembers checks, without reading any member, that an artifact ZIP
+// contains only the allowed members, each once as a regular file within its
+// size limit, including the required one.
+func ciphertextMembers(zr *zip.Reader, allowed map[string]int64, required string) (map[string]*zip.File, error) {
 	if len(zr.File) == 0 || len(zr.File) > len(allowed) {
 		return nil, fmt.Errorf("artifact ZIP must contain one to %d ciphertext files, got %d", len(allowed), len(zr.File))
 	}
-	members := make(map[string][]byte, len(zr.File))
+	members := make(map[string]*zip.File, len(zr.File))
 	for _, file := range zr.File {
 		if file.FileInfo().IsDir() {
 			return nil, fmt.Errorf("unexpected directory %q in artifact ZIP", file.Name)
@@ -602,11 +491,15 @@ func parseCiphertextArtifact(data []byte, allowed map[string]int64, required str
 		if _, duplicate := members[file.Name]; duplicate {
 			return nil, fmt.Errorf("duplicate %s in artifact ZIP", file.Name)
 		}
-		if members[file.Name], err = readBoundedZipFile(file, limit); err != nil {
-			return nil, err
+		if !file.Mode().IsRegular() {
+			return nil, fmt.Errorf("artifact member %q is not a regular file", file.Name)
 		}
+		if file.UncompressedSize64 == 0 || file.UncompressedSize64 > uint64(limit) {
+			return nil, fmt.Errorf("artifact member %q is empty or exceeds %d byte limit", file.Name, limit)
+		}
+		members[file.Name] = file
 	}
-	if len(members[required]) == 0 {
+	if members[required] == nil {
 		return nil, fmt.Errorf("artifact ZIP is missing %s", required)
 	}
 	return members, nil
@@ -712,41 +605,6 @@ func decryptLogToFile(identity age.Identity, ciphertext []byte, outputDir, build
 		return "", fmt.Errorf("save decrypted build log: %w", err)
 	}
 	return path, nil
-}
-
-type savedTestOutputs struct {
-	Diagnostics
-	report []byte
-}
-
-// saveTestOutputs decrypts a test run's log to <out>/ios-test-<id>.log and,
-// when present, its report to <out>/ios-test-<id>.md.
-func saveTestOutputs(identity age.Identity, contents *encryptedTestArtifact, outputDir, buildID string) (*savedTestOutputs, error) {
-	if len(contents.log) == 0 {
-		return nil, errors.New("encrypted test log is missing")
-	}
-	log, err := decryptBounded(identity, contents.log, maxLogCiphertextSize)
-	if err != nil {
-		return nil, fmt.Errorf("decrypt test log: %w", err)
-	}
-	saved := &savedTestOutputs{}
-	saved.LogPath = filepath.Join(outputDir, centralOutputName(centralTestOutputName, buildID, ".log"))
-	if err := atomicWritePrivate(saved.LogPath, log); err != nil {
-		return nil, fmt.Errorf("save decrypted test log: %w", err)
-	}
-	if len(contents.report) == 0 {
-		return saved, nil
-	}
-	report, err := decryptBounded(identity, contents.report, maxReportSize)
-	if err != nil {
-		return nil, fmt.Errorf("decrypt test report: %w", err)
-	}
-	saved.ReportPath = filepath.Join(outputDir, centralOutputName(centralTestOutputName, buildID, ".md"))
-	if err := atomicWritePrivate(saved.ReportPath, report); err != nil {
-		return nil, fmt.Errorf("save decrypted test report: %w", err)
-	}
-	saved.report = report
-	return saved, nil
 }
 
 func decryptBounded(identity age.Identity, ciphertext []byte, limit int64) ([]byte, error) {

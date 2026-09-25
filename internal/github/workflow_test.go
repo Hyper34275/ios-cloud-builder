@@ -3,6 +3,7 @@ package github
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -290,5 +291,79 @@ func TestDownloadArtifactLimitWithoutContentLength(t *testing.T) {
 	defer closeServer()
 	if _, err := client.DownloadArtifactWithProgressLimit(context.Background(), "o", "r", 1, 5, nil); err == nil || !strings.Contains(err.Error(), "exceeds") {
 		t.Fatalf("DownloadArtifactWithProgressLimit() error = %v", err)
+	}
+}
+
+func TestFindWorkflowRunByBuildIDMatchesWindowsTestRuns(t *testing.T) {
+	buildID := "123e4567-e89b-42d3-a456-426614174000"
+	client, closeServer := workflowTestClient(t, func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(WorkflowRunsResponse{WorkflowRuns: []WorkflowRun{
+			{ID: 1, DisplayTitle: "Windows Test " + buildID + "x"},
+			{ID: 2, DisplayTitle: "Windows Build " + buildID},
+			{ID: 3, DisplayTitle: "Windows Test " + buildID},
+		}})
+	})
+	defer closeServer()
+	run, err := client.FindWorkflowRunByBuildID(context.Background(), "builder", "public", "ios-build.yml", buildID)
+	if err != nil || run.ID != 3 {
+		t.Fatalf("FindWorkflowRunByBuildID() = %#v, %v", run, err)
+	}
+}
+
+func TestDeleteWorkflowRun(t *testing.T) {
+	for _, test := range []struct {
+		name     string
+		status   int
+		body     string
+		wantErr  bool
+		wantBusy bool
+	}{
+		{"deleted", http.StatusNoContent, "", false, false},
+		{"already gone", http.StatusNotFound, `{"message":"Not Found"}`, false, false},
+		{"still finishing (409)", http.StatusConflict, `{"message":"Cannot delete a workflow run that is not completed"}`, true, true},
+		{"still finishing (403)", http.StatusForbidden, `{"message":"Cannot delete a workflow run that is not completed"}`, true, true},
+		{"server error", http.StatusBadGateway, "bad gateway", true, true},
+		{"no permission", http.StatusForbidden, `{"message":"Resource not accessible by personal access token"}`, true, false},
+		{"unauthorized", http.StatusUnauthorized, `{"message":"Bad credentials"}`, true, false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			var gotMethod, gotPath string
+			client, closeServer := workflowTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+				gotMethod, gotPath = r.Method, r.URL.Path
+				w.WriteHeader(test.status)
+				_, _ = io.WriteString(w, test.body)
+			})
+			defer closeServer()
+			err := client.DeleteWorkflowRun(context.Background(), "builder", "public", 42)
+			if gotMethod != http.MethodDelete || gotPath != "/repos/builder/public/actions/runs/42" {
+				t.Fatalf("request = %s %s", gotMethod, gotPath)
+			}
+			if (err != nil) != test.wantErr || errors.Is(err, ErrWorkflowRunBusy) != test.wantBusy {
+				t.Fatalf("DeleteWorkflowRun() = %v; want error %v, busy %v", err, test.wantErr, test.wantBusy)
+			}
+			if test.wantErr && test.body != "" && !strings.Contains(err.Error(), strings.Trim(strings.TrimPrefix(test.body, `{"message":`), `"}`)) {
+				t.Fatalf("error %q does not carry GitHub's message", err)
+			}
+		})
+	}
+}
+
+func TestDownloadArtifactToStreamsWithinTheLimit(t *testing.T) {
+	payload := strings.Repeat("z", 1<<20)
+	client, closeServer := workflowTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/repos/o/r/actions/artifacts/7/zip" {
+			t.Errorf("path = %q", r.URL.Path)
+		}
+		_, _ = io.WriteString(w, payload)
+	})
+	defer closeServer()
+	var sink strings.Builder
+	var progressCalls int
+	written, err := client.DownloadArtifactTo(context.Background(), "o", "r", 7, int64(len(payload)), &sink, func(int64, int64) { progressCalls++ })
+	if err != nil || written != int64(len(payload)) || sink.String() != payload || progressCalls == 0 {
+		t.Fatalf("DownloadArtifactTo() = %d, %v (progress %d)", written, err, progressCalls)
+	}
+	if _, err := client.DownloadArtifactTo(context.Background(), "o", "r", 7, int64(len(payload))-1, io.Discard, nil); err == nil {
+		t.Fatal("an archive over the limit was accepted")
 	}
 }
