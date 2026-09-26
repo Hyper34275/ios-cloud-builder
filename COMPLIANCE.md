@@ -2,7 +2,7 @@
 
 Last checked: 2026-08-24.
 
-This repository is an open-source iOS remote-build and orchestration project derived from [MobAI-App/ios-builder](https://github.com/MobAI-App/ios-builder). Its central backend accepts an authorized private application's temporary Git ref as build input, runs the project's iOS build or its own test suite, and returns only AGE-encrypted artifacts. Its optional protected deployment job signs an authenticated unsigned intermediate and uploads it directly to App Store Connect without retaining a signed artifact.
+This repository is an open-source iOS remote-build and orchestration project derived from [MobAI-App/ios-builder](https://github.com/MobAI-App/ios-builder). Its central backend accepts an authorized private application's temporary Git ref as build input, runs the project's iOS build or its own test suite (on macOS, or on Windows for the project's Windows application, together with the Windows build that test suite produces), and returns only AGE-encrypted artifacts. Its optional protected deployment job signs an authenticated unsigned intermediate and uploads it directly to App Store Connect without retaining a signed artifact.
 
 ## GitHub-hosted runner caveat
 
@@ -10,14 +10,14 @@ The [GitHub Terms for Additional Products and Features](https://docs.github.com/
 
 The public builder repository contains the real build engine and workflow, while an authorized private repository supplies application source. GitHub has not published an explicit approval of this exact cross-repository architecture. This project therefore does **not** claim that GitHub has approved it or that it is guaranteed to satisfy GitHub's interpretation of the clause. Repository owners are responsible for evaluating their usage and should contact GitHub for a definitive determination when needed.
 
-This project must not be presented as a billing bypass, disguised workload, generic remote shell, or unrelated compute service. The workflow is deliberately restricted to building, testing, and deploying iOS applications, and the README describes that purpose truthfully.
+This project must not be presented as a billing bypass, disguised workload, generic remote shell, or unrelated compute service. The workflow is deliberately restricted to building, testing, and deploying iOS applications and to testing a Windows application and returning its tested build, and the README describes that purpose truthfully. The Windows job runs on the public builder's hosted Windows runners for a private project exactly as the iOS jobs run on its macOS runners, so the caveat above applies to it unchanged.
 
 ## Operational limits
 
 - Use only repositories and source code you are authorized to access and build.
 - Do not expose the central secret-bearing workflow to pull-request, issue-comment, `workflow_run`, or `pull_request_target` triggers.
 - Keep TestFlight credentials in the protected `apple-production` Environment, require reviewer approval, and restrict deployments to the protected default branch.
-- Do not add generic command/script inputs. The single script input, `test_script`, names a file inside the authorized snapshot and is accepted only for `operation: test`, where it runs that application's test suite. Do not use it for anything other than testing the application.
+- Do not add generic command/script inputs. The single script input, `test_script`, names a file inside the authorized snapshot and is accepted only for `operation: test` and `operation: windows-test`, where it runs that application's test suite. `artifact_path` is accepted only for `operation: windows-test` and names the file that test suite built; it is read, never run. Do not use either for anything other than testing and building the application.
 - Respect GitHub's Acceptable Use Policies, Actions service limits, billing rules, and any account-specific agreement.
 - Recheck the linked terms before material deployment changes and after GitHub announces policy changes.
 

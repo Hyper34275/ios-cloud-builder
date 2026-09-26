@@ -121,21 +121,38 @@ func TestPrintTestResult(t *testing.T) {
 	printTestResult(&passed, &build.TestResult{
 		Passed: true, Conclusion: "success", Report: []byte("## 12 tests passed"),
 		ReportPath: "dist/ios-test-id.md", LogPath: "dist/ios-test-id.log", WorkflowURL: "https://github.com/o/r/actions/runs/1",
+		RunDeleted: true,
 	})
-	for _, want := range []string{"## 12 tests passed\n", "Tests passed\n", "Report: dist/ios-test-id.md\n", "Log: dist/ios-test-id.log\n", "Workflow: https://github.com/o/r/actions/runs/1\n"} {
+	for _, want := range []string{"## 12 tests passed\n", "Tests passed\n", "Report: dist/ios-test-id.md\n", "Log: dist/ios-test-id.log\n", "Workflow run and its encrypted artifact deleted from the public builder\n"} {
 		if !strings.Contains(passed.String(), want) {
 			t.Errorf("passing output missing %q:\n%s", want, passed.String())
 		}
 	}
+	if strings.Contains(passed.String(), "actions/runs/1") || strings.Contains(passed.String(), "Artifact:") {
+		t.Errorf("passing output names a deleted run or a missing artifact:\n%s", passed.String())
+	}
 	var failed bytes.Buffer
-	printTestResult(&failed, &build.TestResult{Conclusion: "failure", LogPath: "dist/ios-test-id.log"})
-	for _, want := range []string{"wrote no $BUILDER_REPORT_DIR/report.md", "Tests failed (workflow concluded failure)\n"} {
+	printTestResult(&failed, &build.TestResult{Conclusion: "failure", LogPath: "dist/ios-test-id.log", WorkflowURL: "https://github.com/o/r/actions/runs/2", RunKept: build.RunKeptFailed})
+	for _, want := range []string{
+		"wrote no $BUILDER_REPORT_DIR/report.md", "Tests failed (workflow concluded failure)\n",
+		"Workflow: https://github.com/o/r/actions/runs/2 (kept because the tests did not pass; its encrypted artifact expires after one day)\n",
+	} {
 		if !strings.Contains(failed.String(), want) {
 			t.Errorf("failing output missing %q:\n%s", want, failed.String())
 		}
 	}
 	if strings.Contains(failed.String(), "Report:") {
 		t.Errorf("failing output names a report that does not exist:\n%s", failed.String())
+	}
+	var kept bytes.Buffer
+	printTestResult(&kept, &build.TestResult{
+		Passed: true, Conclusion: "success", LogPath: "dist/windows-test-id.log", WorkflowURL: "https://github.com/o/r/actions/runs/3",
+		ArtifactPath: "dist/EntrixSetup.exe", ArtifactSize: 160 << 20, RunKept: build.RunKeptOnRequest,
+	})
+	for _, want := range []string{"Tests passed\n", "Artifact: dist/EntrixSetup.exe (160.0 MB)\n", "Workflow: https://github.com/o/r/actions/runs/3 (kept because --keep-run was given)\n"} {
+		if !strings.Contains(kept.String(), want) {
+			t.Errorf("kept output missing %q:\n%s", want, kept.String())
+		}
 	}
 }
 
@@ -144,7 +161,7 @@ func TestIOSTestCommandFlags(t *testing.T) {
 	if err != nil || found != iosTestCmd {
 		t.Fatalf("builder ios test is not registered: %v", err)
 	}
-	for name, want := range map[string]string{"script": "", "timeout": (2 * time.Hour).String(), "output": "dist", "remote": "origin"} {
+	for name, want := range map[string]string{"script": "", "timeout": (2 * time.Hour).String(), "output": "dist", "remote": "origin", "keep-run": "false"} {
 		flag := iosTestCmd.Flags().Lookup(name)
 		if flag == nil || flag.DefValue != want {
 			t.Errorf("--%s default = %v, want %q", name, flag, want)

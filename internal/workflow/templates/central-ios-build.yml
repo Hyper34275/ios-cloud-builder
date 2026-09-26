@@ -1,5 +1,5 @@
-name: Secure central iOS build
-run-name: iOS Build ${{ inputs.build_id }}
+name: Secure central iOS build and Windows test
+run-name: ${{ inputs.operation == 'windows-test' && 'Windows Test' || 'iOS Build' }} ${{ inputs.build_id }}
 
 on:
   workflow_dispatch:
@@ -57,7 +57,7 @@ on:
         required: true
         type: string
       operation:
-        description: Unsigned build, protected TestFlight deployment, or project test run
+        description: Unsigned build, protected TestFlight deployment, or project test run on macOS or Windows
         required: true
         default: build
         type: choice
@@ -65,8 +65,14 @@ on:
           - build
           - testflight
           - test
+          - windows-test
       test_script:
-        description: Test script path relative to the snapshot root; operation test only
+        description: Test script path relative to the snapshot root; operations test and windows-test only
+        required: false
+        default: ''
+        type: string
+      artifact_path:
+        description: File the passing test script builds, relative to the snapshot root; operation windows-test only
         required: false
         default: ''
         type: string
@@ -76,7 +82,7 @@ permissions:
 
 jobs:
   build:
-    if: inputs.operation != 'test'
+    if: inputs.operation == 'build' || inputs.operation == 'testflight'
     runs-on: macos-15
     timeout-minutes: 45
     outputs:
@@ -116,6 +122,7 @@ jobs:
           ARTIFACT_RECIPIENT: ${{ inputs.artifact_recipient }}
           OPERATION: ${{ inputs.operation }}
           TEST_SCRIPT: ${{ inputs.test_script }}
+          ARTIFACT_PATH: ${{ inputs.artifact_path }}
         run: |
           "$RUNNER_TEMP/builder-runner" validate-inputs \
             --build-id "$BUILD_ID" \
@@ -128,7 +135,8 @@ jobs:
             --framework-hint "$FRAMEWORK_HINT" \
             --artifact-recipient "$ARTIFACT_RECIPIENT" \
             --operation "$OPERATION" \
-            --test-script "$TEST_SCRIPT"
+            --test-script "$TEST_SCRIPT" \
+            --artifact-path "$ARTIFACT_PATH"
 
       - name: Create repository-scoped GitHub App token
         id: source-token
@@ -393,6 +401,7 @@ jobs:
           ARTIFACT_RECIPIENT: ${{ inputs.artifact_recipient }}
           OPERATION: ${{ inputs.operation }}
           TEST_SCRIPT: ${{ inputs.test_script }}
+          ARTIFACT_PATH: ${{ inputs.artifact_path }}
         run: |
           "$RUNNER_TEMP/builder-runner" validate-inputs \
             --build-id "$BUILD_ID" \
@@ -405,7 +414,8 @@ jobs:
             --framework-hint "$FRAMEWORK_HINT" \
             --artifact-recipient "$ARTIFACT_RECIPIENT" \
             --operation "$OPERATION" \
-            --test-script "$TEST_SCRIPT"
+            --test-script "$TEST_SCRIPT" \
+            --artifact-path "$ARTIFACT_PATH"
 
       - name: Create repository-scoped GitHub App token
         id: source-token
@@ -489,3 +499,153 @@ jobs:
             exit 1
           fi
           echo "Tests passed"
+
+  windows-test:
+    if: inputs.operation == 'windows-test'
+    runs-on: windows-2025
+    timeout-minutes: 150
+    # PowerShell, not Git Bash: MSYS rewrites arguments and environment values
+    # that look like POSIX paths before a native program sees them. Every value
+    # below is one quoted --name=value argument, so an empty or odd input can
+    # never shift or split the runner's arguments.
+    defaults:
+      run:
+        shell: pwsh
+
+    steps:
+      - name: Checkout trusted public builder
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          path: builder
+          persist-credentials: false
+
+      - name: Set up trusted Go toolchain
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16
+        with:
+          go-version-file: builder/go.mod
+          cache: false
+
+      - name: Build trusted runner before private checkout
+        working-directory: builder
+        run: |
+          go mod verify
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          go build -trimpath -o "$env:RUNNER_TEMP\builder-runner.exe" ./cmd/builder-runner
+          exit $LASTEXITCODE
+
+      - name: Validate all dispatch inputs before credential creation
+        env:
+          BUILD_ID: ${{ inputs.build_id }}
+          SOURCE_OWNER: ${{ inputs.source_owner }}
+          SOURCE_REPO: ${{ inputs.source_repo }}
+          SNAPSHOT_REF: ${{ inputs.snapshot_ref }}
+          IOS_PATH: ${{ inputs.ios_path }}
+          SCHEME: ${{ inputs.scheme }}
+          CONFIGURATION: ${{ inputs.configuration }}
+          FRAMEWORK_HINT: ${{ inputs.framework_hint }}
+          ARTIFACT_RECIPIENT: ${{ inputs.artifact_recipient }}
+          OPERATION: ${{ inputs.operation }}
+          TEST_SCRIPT: ${{ inputs.test_script }}
+          ARTIFACT_PATH: ${{ inputs.artifact_path }}
+        run: |
+          & "$env:RUNNER_TEMP\builder-runner.exe" validate-inputs `
+            "--build-id=$env:BUILD_ID" `
+            "--source-owner=$env:SOURCE_OWNER" `
+            "--source-repo=$env:SOURCE_REPO" `
+            "--snapshot-ref=$env:SNAPSHOT_REF" `
+            "--ios-path=$env:IOS_PATH" `
+            "--scheme=$env:SCHEME" `
+            "--configuration=$env:CONFIGURATION" `
+            "--framework-hint=$env:FRAMEWORK_HINT" `
+            "--artifact-recipient=$env:ARTIFACT_RECIPIENT" `
+            "--operation=$env:OPERATION" `
+            "--test-script=$env:TEST_SCRIPT" `
+            "--artifact-path=$env:ARTIFACT_PATH"
+          exit $LASTEXITCODE
+
+      - name: Create repository-scoped GitHub App token
+        id: source-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1
+        with:
+          client-id: ${{ vars.APP_CLIENT_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+          owner: ${{ inputs.source_owner }}
+          repositories: ${{ inputs.source_repo }}
+          permission-contents: read
+          skip-token-revoke: true
+
+      - name: Checkout exactly the authorized private snapshot
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          repository: ${{ inputs.source_owner }}/${{ inputs.source_repo }}
+          ref: ${{ inputs.snapshot_ref }}
+          token: ${{ steps.source-token.outputs.token }}
+          path: source
+          persist-credentials: false
+          fetch-depth: 1
+          fetch-tags: false
+          submodules: false
+          lfs: false
+
+      - name: Revoke private repository token before project code
+        if: always() && steps.source-token.outcome == 'success'
+        env:
+          SOURCE_TOKEN: ${{ steps.source-token.outputs.token }}
+        run: |
+          & "$env:RUNNER_TEMP\builder-runner.exe" revoke-token
+          exit $LASTEXITCODE
+
+      - name: Verify checkout credential cleanup
+        run: |
+          & "$env:RUNNER_TEMP\builder-runner.exe" verify-checkout "--source=$env:GITHUB_WORKSPACE\source"
+          exit $LASTEXITCODE
+
+      - name: Run project tests and encrypt private outputs
+        id: secure-test
+        continue-on-error: true
+        env:
+          TEST_SCRIPT: ${{ inputs.test_script }}
+          ARTIFACT_PATH: ${{ inputs.artifact_path }}
+          ARTIFACT_RECIPIENT: ${{ inputs.artifact_recipient }}
+        run: |
+          & "$env:RUNNER_TEMP\builder-runner.exe" execute-tests `
+            "--source=$env:GITHUB_WORKSPACE\source" `
+            "--script=$env:TEST_SCRIPT" `
+            "--artifact=$env:ARTIFACT_PATH" `
+            "--log=$env:RUNNER_TEMP\private-output\test.log" `
+            "--report-dir=$env:RUNNER_TEMP\private-output\report" `
+            "--timeout=135m" `
+            "--recipient=$env:ARTIFACT_RECIPIENT" `
+            "--output=$env:RUNNER_TEMP\encrypted"
+          exit $LASTEXITCODE
+
+      - name: Upload ciphertext only
+        id: upload
+        if: always()
+        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4
+        with:
+          name: ios-builder-${{ inputs.build_id }}
+          path: |
+            ${{ runner.temp }}/encrypted/test.log.age
+            ${{ runner.temp }}/encrypted/report.md.age
+            ${{ runner.temp }}/encrypted/artifact.age
+          if-no-files-found: error
+          retention-days: 1
+          include-hidden-files: false
+          compression-level: 0
+
+      - name: Report private test status
+        if: always()
+        env:
+          TEST_OUTCOME: ${{ steps.secure-test.outcome }}
+          UPLOAD_OUTCOME: ${{ steps.upload.outcome }}
+        run: |
+          if ($env:UPLOAD_OUTCOME -ne 'success') {
+            Write-Output 'Encrypted artifact upload failed. No private diagnostics were printed.'
+            exit 1
+          }
+          if ($env:TEST_OUTCOME -ne 'success') {
+            Write-Output 'Tests failed. Download the encrypted report using Builder CLI.'
+            exit 1
+          }
+          Write-Output 'Tests passed'

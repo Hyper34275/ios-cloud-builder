@@ -96,6 +96,7 @@ func TestCentralWorkflowSecurityProperties(t *testing.T) {
 		"APPLE_SIGNING_AGE_IDENTITY", "APPLE_DISTRIBUTION_P12", "APPLE_PROVISIONING_PROFILE", "APPLE_PROVISIONING_PROFILES",
 		"ASC_API_KEY_P8", "deploy-testflight", "--build-number", "needs.build.outputs.build_number", "github.run_attempt", "ios-builder-deploy-${{ inputs.build_id }}",
 		"runs-on: macos-26", "test_script:", "execute-tests", "encrypted/test.log.age", "encrypted/report.md.age",
+		"runs-on: windows-2025", "artifact_path:", "windows-test", "encrypted/artifact.age", "shell: pwsh",
 	} {
 		if !strings.Contains(text, required) {
 			t.Errorf("central workflow missing %q", required)
@@ -199,9 +200,16 @@ type staticJob struct {
 	Environment    string            `yaml:"environment"`
 	RunsOn         string            `yaml:"runs-on"`
 	TimeoutMinutes int               `yaml:"timeout-minutes"`
+	Defaults       staticDefaults    `yaml:"defaults"`
 	Outputs        map[string]string `yaml:"outputs"`
 	Env            map[string]string `yaml:"env"`
 	Steps          []staticStep      `yaml:"steps"`
+}
+
+type staticDefaults struct {
+	Run struct {
+		Shell string `yaml:"shell"`
+	} `yaml:"run"`
 }
 
 type staticStep struct {
@@ -266,11 +274,13 @@ func TestCentralWorkflowRunScriptsNeverInterpolateExpressions(t *testing.T) {
 func TestCentralWorkflowTestOperation(t *testing.T) {
 	workflow := loadStaticWorkflow(t)
 	inputs := workflow.On.WorkflowDispatch.Inputs
-	if got := inputs["operation"].Options; !reflect.DeepEqual(got, []string{"build", "testflight", "test"}) {
+	if got := inputs["operation"].Options; !reflect.DeepEqual(got, []string{"build", "testflight", "test", "windows-test"}) {
 		t.Errorf("operation options = %v", got)
 	}
-	if script := inputs["test_script"]; script.Required || script.Default != "" || script.Type != "string" {
-		t.Errorf("test_script input = %+v, want an optional string defaulting to empty", script)
+	for _, name := range []string{"test_script", "artifact_path"} {
+		if input := inputs[name]; input.Required || input.Default != "" || input.Type != "string" {
+			t.Errorf("%s input = %+v, want an optional string defaulting to empty", name, input)
+		}
 	}
 	if !reflect.DeepEqual(workflow.Permissions, map[string]string{"contents": "read"}) {
 		t.Errorf("workflow permissions = %v", workflow.Permissions)
@@ -280,16 +290,22 @@ func TestCentralWorkflowTestOperation(t *testing.T) {
 		jobNames = append(jobNames, name)
 	}
 	sort.Strings(jobNames)
-	if !reflect.DeepEqual(jobNames, []string{"build", "sign-and-deploy", "test"}) {
+	if !reflect.DeepEqual(jobNames, []string{"build", "sign-and-deploy", "test", "windows-test"}) {
 		t.Fatalf("jobs = %v", jobNames)
 	}
 	build, deploy, test := workflow.Jobs["build"], workflow.Jobs["sign-and-deploy"], workflow.Jobs["test"]
 
-	// Exactly one path runs per operation, and the test path never reaches the
+	// Exactly one path runs per operation, and the test paths never reach the
 	// protected Environment or its signing job.
-	if build.If != "inputs.operation != 'test'" || test.If != "inputs.operation == 'test'" ||
-		deploy.If != "inputs.operation == 'testflight'" || deploy.Needs != "build" {
-		t.Errorf("job conditions: build %q, test %q, deploy %q needs %q", build.If, test.If, deploy.If, deploy.Needs)
+	if build.If != "inputs.operation == 'build' || inputs.operation == 'testflight'" || test.If != "inputs.operation == 'test'" ||
+		deploy.If != "inputs.operation == 'testflight'" || deploy.Needs != "build" ||
+		workflow.Jobs["windows-test"].If != "inputs.operation == 'windows-test'" {
+		t.Errorf("job conditions: build %q, test %q, deploy %q needs %q, windows-test %q",
+			build.If, test.If, deploy.If, deploy.Needs, workflow.Jobs["windows-test"].If)
+	}
+	if !strings.Contains(workflow.RunName, "inputs.operation == 'windows-test' && 'Windows Test' || 'iOS Build'") ||
+		!strings.HasSuffix(workflow.RunName, "${{ inputs.build_id }}") {
+		t.Errorf("run-name = %q, want the operation's fixed title and the build ID", workflow.RunName)
 	}
 	if test.RunsOn != "macos-26" || test.TimeoutMinutes != 120 {
 		t.Errorf("test job runs-on %q with timeout %d, want macos-26 and 120", test.RunsOn, test.TimeoutMinutes)
@@ -334,6 +350,9 @@ func TestCentralWorkflowTestOperation(t *testing.T) {
 	validate := test.Steps[stepIndex(&test, "Validate all dispatch inputs before credential creation")]
 	if validate.Env["TEST_SCRIPT"] != "${{ inputs.test_script }}" || !strings.Contains(validate.Run, `--test-script "$TEST_SCRIPT"`) {
 		t.Error("test_script is not validated before credential creation")
+	}
+	if validate.Env["ARTIFACT_PATH"] != "${{ inputs.artifact_path }}" || !strings.Contains(validate.Run, `--artifact-path "$ARTIFACT_PATH"`) {
+		t.Error("artifact_path is not validated (and so rejected) before credential creation")
 	}
 	revokeIndex := stepIndex(&test, "Revoke private repository token before project code")
 	runIndex := stepIndex(&test, "Run project tests and encrypt private outputs")
@@ -437,5 +456,217 @@ func TestCentralWorkflowTestOperation(t *testing.T) {
 		`echo "Tests passed"`,
 	}) {
 		t.Errorf("status step prints %q", echoes)
+	}
+}
+
+// windowsRunnerLine matches one argument line of a PowerShell call to the
+// trusted runner: a single double-quoted --name=value argument whose value is
+// one environment variable or fixed text, with the line continuation.
+var windowsRunnerLine = regexp.MustCompile(`^"--[a-z-]+=(?:\$env:[A-Z_]+)?[A-Za-z0-9\\._-]*"(?: ` + "`" + `)?$`)
+
+func TestCentralWorkflowWindowsTestOperation(t *testing.T) {
+	workflow := loadStaticWorkflow(t)
+	job, iosTest, build := workflow.Jobs["windows-test"], workflow.Jobs["test"], workflow.Jobs["build"]
+	if job.If != "inputs.operation == 'windows-test'" || job.RunsOn != "windows-2025" || job.TimeoutMinutes != 150 {
+		t.Errorf("windows-test job: if %q, runs-on %q, timeout %d", job.If, job.RunsOn, job.TimeoutMinutes)
+	}
+	if job.Environment != "" || job.Needs != "" || len(job.Outputs) != 0 || len(job.Env) != 0 {
+		t.Errorf("windows-test job must have no Environment, dependency, outputs, or job env: %+v", job)
+	}
+	if job.Defaults.Run.Shell != "pwsh" {
+		t.Errorf("windows-test job shell = %q, want pwsh", job.Defaults.Run.Shell)
+	}
+
+	wantSteps := []string{
+		"Checkout trusted public builder",
+		"Set up trusted Go toolchain",
+		"Build trusted runner before private checkout",
+		"Validate all dispatch inputs before credential creation",
+		"Create repository-scoped GitHub App token",
+		"Checkout exactly the authorized private snapshot",
+		"Revoke private repository token before project code",
+		"Verify checkout credential cleanup",
+		"Run project tests and encrypt private outputs",
+		"Upload ciphertext only",
+		"Report private test status",
+	}
+	gotSteps := make([]string, 0, len(job.Steps))
+	for _, step := range job.Steps {
+		gotSteps = append(gotSteps, step.Name)
+	}
+	if !reflect.DeepEqual(gotSteps, wantSteps) {
+		t.Fatalf("windows-test steps = %q, want %q", gotSteps, wantSteps)
+	}
+	// The action steps (both checkouts, Go, and token minting) are the macOS
+	// test job's, byte for byte; only the shell steps are PowerShell.
+	for _, name := range []string{
+		"Checkout trusted public builder", "Set up trusted Go toolchain",
+		"Create repository-scoped GitHub App token", "Checkout exactly the authorized private snapshot",
+	} {
+		if !reflect.DeepEqual(job.Steps[stepIndex(&job, name)], iosTest.Steps[stepIndex(&iosTest, name)]) {
+			t.Errorf("windows-test step %q differs from the macOS test job's", name)
+		}
+	}
+
+	// The runner is built from the trusted checkout, after go mod verify.
+	runnerBuild := job.Steps[stepIndex(&job, "Build trusted runner before private checkout")]
+	if runnerBuild.WorkingDirectory != "builder" || !strings.HasPrefix(runnerBuild.Run, "go mod verify\nif ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }\n") ||
+		!strings.Contains(runnerBuild.Run, `go build -trimpath -o "$env:RUNNER_TEMP\builder-runner.exe" ./cmd/builder-runner`) {
+		t.Errorf("runner build step = %+v", runnerBuild)
+	}
+
+	// Every input is validated before any credential exists, with the same
+	// environment as the build job's validation.
+	validate := job.Steps[stepIndex(&job, "Validate all dispatch inputs before credential creation")]
+	buildValidate := build.Steps[stepIndex(&build, "Validate all dispatch inputs before credential creation")]
+	if !reflect.DeepEqual(validate.Env, buildValidate.Env) {
+		t.Errorf("windows-test validation env %v differs from the build job's %v", validate.Env, buildValidate.Env)
+	}
+	for name := range validate.Env {
+		flag := "--" + strings.ReplaceAll(strings.ToLower(name), "_", "-")
+		if name == "ARTIFACT_RECIPIENT" {
+			flag = "--artifact-recipient"
+		}
+		if want := `"` + flag + `=$env:` + name + `"`; strings.Count(validate.Run, want) != 1 {
+			t.Errorf("validation does not pass %s exactly once as %s", name, want)
+		}
+	}
+
+	revokeIndex := stepIndex(&job, "Revoke private repository token before project code")
+	runIndex := stepIndex(&job, "Run project tests and encrypt private outputs")
+	if revoke := job.Steps[revokeIndex]; revokeIndex > runIndex || revoke.If != "always() && steps.source-token.outcome == 'success'" ||
+		!reflect.DeepEqual(revoke.Env, map[string]string{"SOURCE_TOKEN": "${{ steps.source-token.outputs.token }}"}) ||
+		revoke.Run != "& \"$env:RUNNER_TEMP\\builder-runner.exe\" revoke-token\nexit $LASTEXITCODE\n" {
+		t.Errorf("the private repository token is not revoked before the test script runs: %+v", job.Steps[revokeIndex])
+	}
+	verify := job.Steps[stepIndex(&job, "Verify checkout credential cleanup")]
+	if verify.Run != "& \"$env:RUNNER_TEMP\\builder-runner.exe\" verify-checkout \"--source=$env:GITHUB_WORKSPACE\\source\"\nexit $LASTEXITCODE\n" {
+		t.Errorf("checkout verification step = %q", verify.Run)
+	}
+
+	// Credentials: only the App key and client ID, only to mint the token,
+	// which reaches only the checkout and its revocation.
+	secretRef := regexp.MustCompile(`\b(secrets|vars)\.[A-Za-z0-9_]+`)
+	for index, step := range job.Steps {
+		text := stepText(t, &job.Steps[index])
+		refs := secretRef.FindAllString(text, -1)
+		if step.Name == "Create repository-scoped GitHub App token" {
+			sort.Strings(refs)
+			if !reflect.DeepEqual(refs, []string{"secrets.APP_PRIVATE_KEY", "vars.APP_CLIENT_ID"}) {
+				t.Errorf("token step references %v", refs)
+			}
+		} else if len(refs) != 0 {
+			t.Errorf("windows-test step %q references %v", step.Name, refs)
+		}
+		if strings.Contains(text, "steps.source-token.outputs.token") &&
+			step.Name != "Checkout exactly the authorized private snapshot" && index != revokeIndex {
+			t.Errorf("windows-test step %q receives the private repository token", step.Name)
+		}
+		for _, forbidden := range []string{
+			"GITHUB_STEP_SUMMARY", "GITHUB_OUTPUT", "GITHUB_ENV", "actions/cache", "download-artifact", "APPLE_", "ASC_",
+			"github.token", "Invoke-Expression", "iex ", "Start-Process", "Get-ChildItem", "env:*", "bash", "cmd /c", "-Command",
+		} {
+			if strings.Contains(text, forbidden) {
+				t.Errorf("windows-test step %q contains %q", step.Name, forbidden)
+			}
+		}
+		if step.Uses != "" {
+			action, _, _ := strings.Cut(step.Uses, "@")
+			switch action {
+			case "actions/checkout", "actions/setup-go", "actions/create-github-app-token", "actions/upload-artifact":
+			default:
+				t.Errorf("windows-test job uses unexpected action %s", step.Uses)
+			}
+			continue
+		}
+		// staticStep has no shell field, so strict decoding already proves no
+		// step overrides the job's pwsh default. A PowerShell step exits with the runner's own status, and every
+		// runner argument is one quoted --name=value.
+		if step.Name != "Report private test status" && !strings.HasSuffix(step.Run, "exit $LASTEXITCODE\n") {
+			t.Errorf("windows-test step %q does not end with exit $LASTEXITCODE", step.Name)
+		}
+		if invocation, ok := strings.CutPrefix(step.Run, `& "$env:RUNNER_TEMP\builder-runner.exe" `); ok {
+			lines := strings.Split(strings.TrimSuffix(invocation, "\nexit $LASTEXITCODE\n"), "\n")
+			subcommand, rest, _ := strings.Cut(strings.TrimSuffix(lines[0], " `"), " ")
+			if !regexp.MustCompile(`^[a-z-]+$`).MatchString(subcommand) {
+				t.Errorf("windows-test step %q runs subcommand %q", step.Name, subcommand)
+			}
+			arguments := lines[1:]
+			if rest != "" {
+				arguments = append([]string{rest}, arguments...)
+			}
+			for _, argument := range arguments {
+				if argument = strings.TrimSpace(argument); !windowsRunnerLine.MatchString(argument) {
+					t.Errorf("windows-test step %q passes an unquoted or compound argument: %s", step.Name, argument)
+				}
+			}
+		}
+	}
+
+	// The script runs only through the trusted runner, with inputs as env.
+	run := job.Steps[runIndex]
+	if run.ID != "secure-test" || !run.ContinueOnError || !reflect.DeepEqual(run.Env, map[string]string{
+		"TEST_SCRIPT":        "${{ inputs.test_script }}",
+		"ARTIFACT_PATH":      "${{ inputs.artifact_path }}",
+		"ARTIFACT_RECIPIENT": "${{ inputs.artifact_recipient }}",
+	}) {
+		t.Errorf("windows test step = %+v", run)
+	}
+	wantRun := strings.Join([]string{
+		"& \"$env:RUNNER_TEMP\\builder-runner.exe\" execute-tests `",
+		"  \"--source=$env:GITHUB_WORKSPACE\\source\" `",
+		"  \"--script=$env:TEST_SCRIPT\" `",
+		"  \"--artifact=$env:ARTIFACT_PATH\" `",
+		"  \"--log=$env:RUNNER_TEMP\\private-output\\test.log\" `",
+		"  \"--report-dir=$env:RUNNER_TEMP\\private-output\\report\" `",
+		"  \"--timeout=135m\" `",
+		"  \"--recipient=$env:ARTIFACT_RECIPIENT\" `",
+		"  \"--output=$env:RUNNER_TEMP\\encrypted\"",
+		"exit $LASTEXITCODE",
+		"",
+	}, "\n")
+	if run.Run != wantRun {
+		t.Errorf("windows test step runs\n%s\nwant\n%s", run.Run, wantRun)
+	}
+
+	// Only the three ciphertext files are uploaded, like the other jobs.
+	upload := job.Steps[stepIndex(&job, "Upload ciphertext only")]
+	iosUpload := iosTest.Steps[stepIndex(&iosTest, "Upload ciphertext only")]
+	if upload.Uses != iosUpload.Uses || upload.If != "always()" || upload.ID != "upload" {
+		t.Errorf("windows upload step = %+v", upload)
+	}
+	wantWith := map[string]string{
+		"name":                 "ios-builder-${{ inputs.build_id }}",
+		"path":                 "${{ runner.temp }}/encrypted/test.log.age\n${{ runner.temp }}/encrypted/report.md.age\n${{ runner.temp }}/encrypted/artifact.age\n",
+		"if-no-files-found":    "error",
+		"retention-days":       "1",
+		"include-hidden-files": "false",
+		"compression-level":    "0",
+	}
+	if !reflect.DeepEqual(upload.With, wantWith) {
+		t.Errorf("windows upload with = %#v, want %#v", upload.With, wantWith)
+	}
+
+	// The public log says only passed or failed.
+	status := job.Steps[stepIndex(&job, "Report private test status")]
+	if status.If != "always()" || !reflect.DeepEqual(status.Env, map[string]string{
+		"TEST_OUTCOME":   "${{ steps.secure-test.outcome }}",
+		"UPLOAD_OUTCOME": "${{ steps.upload.outcome }}",
+	}) {
+		t.Errorf("windows status step = %+v", status)
+	}
+	var writes []string
+	for _, line := range strings.Split(status.Run, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if strings.Contains(trimmed, "Write-") || strings.Contains(trimmed, "echo") {
+			writes = append(writes, trimmed)
+		}
+	}
+	if !reflect.DeepEqual(writes, []string{
+		"Write-Output 'Encrypted artifact upload failed. No private diagnostics were printed.'",
+		"Write-Output 'Tests failed. Download the encrypted report using Builder CLI.'",
+		"Write-Output 'Tests passed'",
+	}) {
+		t.Errorf("windows status step prints %q", writes)
 	}
 }

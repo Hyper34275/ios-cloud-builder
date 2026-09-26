@@ -88,6 +88,7 @@ func validateInputs(args []string) error {
 	flags.StringVar(&in.ArtifactRecipient, "artifact-recipient", "", "")
 	flags.StringVar(&in.Operation, "operation", "", "")
 	flags.StringVar(&in.TestScript, "test-script", "", "")
+	flags.StringVar(&in.ArtifactPath, "artifact-path", "", "")
 	if err := flags.Parse(args); err != nil || flags.NArg() != 0 {
 		return fmt.Errorf("invalid validation arguments")
 	}
@@ -174,7 +175,8 @@ func execute(args []string) error {
 
 // executeTests runs the project's test script. Only the two fixed lines below
 // and a fixed error reach the public job log; the script's own output goes to
-// the private log, which is encrypted with the optional report.
+// the private log, which is encrypted with the optional report and, after a
+// pass, the optional artifact.
 func executeTests(args []string) error {
 	flags := newFlags("execute-tests")
 	var options runner.TestOptions
@@ -182,6 +184,7 @@ func executeTests(args []string) error {
 	flags.StringVar(&options.SourceRoot, "source", "", "")
 	flags.StringVar(&options.IOSPath, "ios-path", "", "")
 	flags.StringVar(&options.Script, "script", "", "")
+	flags.StringVar(&options.Artifact, "artifact", "", "")
 	flags.StringVar(&options.LogPath, "log", "", "")
 	flags.StringVar(&options.ReportDir, "report-dir", "", "")
 	flags.DurationVar(&options.Timeout, "timeout", 0, "")
@@ -197,6 +200,10 @@ func executeTests(args []string) error {
 		}
 		return fmt.Errorf("secure test artifact preparation failed")
 	}
-	fmt.Println("Tests passed; encrypted report is ready")
+	if options.Artifact != "" {
+		fmt.Println("Tests passed; encrypted report and artifact are ready")
+	} else {
+		fmt.Println("Tests passed; encrypted report is ready")
+	}
 	return nil
 }

@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"path"
 	"path/filepath"
 	"strings"
 	"syscall"
@@ -34,9 +35,13 @@ decides whether the tests passed.
 Everything the script prints, and its report, are encrypted to your local AGE
 identity before they leave the runner; the public run shows only whether the
 tests passed. The decrypted log and report are written to the output directory
-and the report is printed here. The command exits non-zero when the tests fail.`,
+and the report is printed here. The command exits non-zero when the tests fail.
+
+When the tests pass, the command deletes the run and its encrypted artifact
+from the public builder (--keep-run keeps them). A run whose tests did not
+pass is kept, with its encrypted artifact for one day.`,
 	Args: cobra.NoArgs,
-	RunE: runIOSTest,
+	RunE: func(cmd *cobra.Command, _ []string) error { return runCentralTest(cmd, build.PlatformIOS) },
 }
 
 func init() {
@@ -44,10 +49,13 @@ func init() {
 	iosTestCmd.Flags().Duration("timeout", build.DefaultTestTimeout, "How long to wait for the run, including queueing")
 	iosTestCmd.Flags().StringP("output", "o", "dist", "Output directory for the decrypted log and report")
 	iosTestCmd.Flags().StringP("remote", "r", "origin", "Git remote to push the working-tree snapshot to")
+	iosTestCmd.Flags().Bool("keep-run", false, "Keep the public workflow run and its encrypted artifact after the tests pass")
 	iosCmd.AddCommand(iosTestCmd)
 }
 
-func runIOSTest(cmd *cobra.Command, _ []string) error {
+// runCentralTest is `builder ios test` and `builder windows test`.
+func runCentralTest(cmd *cobra.Command, platform build.TestPlatform) error {
+	command := "builder " + string(platform) + " test"
 	cfg, err := loadConfig()
 	if err != nil {
 		return err
@@ -56,7 +64,7 @@ func runIOSTest(cmd *cobra.Command, _ []string) error {
 		return fmt.Errorf("invalid configuration: %w", err)
 	}
 	if !cfg.IsCentral() {
-		return fmt.Errorf("`builder ios test` requires backend=central")
+		return fmt.Errorf("`%s` requires backend=central", command)
 	}
 	ctx := cmd.Context()
 	if ctx == nil {
@@ -70,7 +78,12 @@ func runIOSTest(cmd *cobra.Command, _ []string) error {
 		return err
 	}
 	flagScript, _ := cmd.Flags().GetString("script")
-	script, err := resolveTestScript(flagScript, cfg.IOS.TestScript, repoRoot)
+	source := iosScriptSource
+	configScript := cfg.IOS.TestScript
+	if platform == build.PlatformWindows {
+		source, configScript = windowsScriptSource, cfg.Windows.TestScript
+	}
+	script, err := resolveScriptPath(flagScript, configScript, source, repoRoot)
 	if err != nil {
 		return err
 	}
@@ -84,17 +97,29 @@ func runIOSTest(cmd *cobra.Command, _ []string) error {
 	outputDir, _ := cmd.Flags().GetString("output")
 	timeout, _ := cmd.Flags().GetDuration("timeout")
 	remote, _ := cmd.Flags().GetString("remote")
+	keepRun, _ := cmd.Flags().GetBool("keep-run")
+	options := build.TestOptions{
+		OutputDir: outputDir,
+		Timeout:   timeout,
+		Remote:    remote,
+		Script:    script,
+		Platform:  platform,
+		KeepRun:   keepRun,
+	}
+	if platform == build.PlatformWindows {
+		flagArtifact, _ := cmd.Flags().GetString("artifact")
+		options.Artifact, err = resolveArtifactPath(flagArtifact, cmd.Flags().Changed("artifact"), cfg.Windows.Artifact, repoRoot)
+		if err != nil {
+			return err
+		}
+		warnIfArtifactWouldBeSnapshotted(ctx, os.Stderr, repoRoot, outputDir, options.Artifact)
+	}
 
 	ghClient, err := getGitHubClient()
 	if err != nil {
 		return err
 	}
-	result, err := build.NewCoordinator(cfg, ghClient).Test(ctx, build.TestOptions{
-		OutputDir: outputDir,
-		Timeout:   timeout,
-		Remote:    remote,
-		Script:    script,
-	})
+	result, err := build.NewCoordinator(cfg, ghClient).Test(ctx, options)
 	if err != nil {
 		return err
 	}
@@ -105,28 +130,55 @@ func runIOSTest(cmd *cobra.Command, _ []string) error {
 	return nil
 }
 
-// resolveTestScript picks the test script, --script over ios.testScript, and
-// proves locally that it names a regular file inside the repository, so a
+// scriptSource describes where a platform's test script comes from.
+type scriptSource struct {
+	configKey string // builder.json key
+	example   string
+	validate  func(string) error
+}
+
+var (
+	iosScriptSource     = scriptSource{"ios.testScript", "scripts/ios-test.sh", config.ValidateTestScriptPath}
+	windowsScriptSource = scriptSource{"windows.testScript", "scripts/windows-test.ps1", config.ValidateWindowsTestScriptPath}
+)
+
+// resolveTestScript is resolveScriptPath for `builder ios test`.
+func resolveTestScript(flagValue, configValue, repoRoot string) (string, error) {
+	return resolveScriptPath(flagValue, configValue, iosScriptSource, repoRoot)
+}
+
+// repositoryRelative turns a --script or --artifact value into the clean
+// forward-slash path, relative to the repository root, the workflow receives.
+func repositoryRelative(flag, value, repoRoot string) (string, error) {
+	value = strings.TrimSpace(value)
+	if filepath.IsAbs(value) {
+		relative, err := filepath.Rel(repoRoot, value)
+		if err != nil {
+			return "", fmt.Errorf("%s %s is outside the repository %s", flag, value, repoRoot)
+		}
+		value = relative
+	}
+	return filepath.ToSlash(filepath.Clean(value)), nil
+}
+
+// resolveScriptPath picks the test script, --script over the configured one,
+// and proves locally that it names a regular file inside the repository, so a
 // typo fails before anything is snapshotted or dispatched. It returns the
 // forward-slash path the workflow receives.
-func resolveTestScript(flagValue, configValue, repoRoot string) (string, error) {
+func resolveScriptPath(flagValue, configValue string, from scriptSource, repoRoot string) (string, error) {
 	value, source := strings.TrimSpace(flagValue), "--script"
 	if value == "" {
-		value, source = configValue, "ios.testScript in builder.json"
+		value, source = configValue, from.configKey+" in builder.json"
 	} else {
-		if filepath.IsAbs(value) {
-			relative, err := filepath.Rel(repoRoot, value)
-			if err != nil {
-				return "", fmt.Errorf("--script %s is outside the repository %s", value, repoRoot)
-			}
-			value = relative
+		var err error
+		if value, err = repositoryRelative("--script", value, repoRoot); err != nil {
+			return "", err
 		}
-		value = filepath.ToSlash(filepath.Clean(value))
 	}
 	if value == "" {
-		return "", errors.New("no test script: pass --script <path> or set ios.testScript in builder.json to a path relative to the repository root, such as scripts/ios-test.sh")
+		return "", fmt.Errorf("no test script: pass --script <path> or set %s in builder.json to a path relative to the repository root, such as %s", from.configKey, from.example)
 	}
-	if err := config.ValidateTestScriptPath(value); err != nil {
+	if err := from.validate(value); err != nil {
 		return "", fmt.Errorf("test script %q from %s %v", value, source, err)
 	}
 	local := filepath.Join(repoRoot, filepath.FromSlash(value))
@@ -176,6 +228,73 @@ func testScriptIgnored(ctx context.Context, repoRoot, script string) (bool, erro
 	return false, fmt.Errorf("check whether the test script is ignored: %w", err)
 }
 
+// resolveArtifactPath picks the Windows artifact, --artifact over
+// windows.artifact; an explicitly empty --artifact= requests none. The file
+// is built by the test script, so it need not exist locally yet.
+func resolveArtifactPath(flagValue string, flagSet bool, configValue, repoRoot string) (string, error) {
+	value, source := configValue, "windows.artifact in builder.json"
+	if flagSet {
+		if strings.TrimSpace(flagValue) == "" {
+			return "", nil
+		}
+		var err error
+		if value, err = repositoryRelative("--artifact", flagValue, repoRoot); err != nil {
+			return "", err
+		}
+		source = "--artifact"
+	}
+	if value == "" {
+		return "", nil
+	}
+	if err := config.ValidateArtifactPath(value); err != nil {
+		return "", fmt.Errorf("artifact %q from %s %v", value, source, err)
+	}
+	return value, nil
+}
+
+// warnIfArtifactWouldBeSnapshotted warns when the decrypted artifact will be
+// written inside the repository where .gitignore does not exclude it: the
+// next snapshot would then push it, and GitHub rejects files over 100 MB.
+func warnIfArtifactWouldBeSnapshotted(ctx context.Context, w io.Writer, repoRoot, outputDir, artifact string) {
+	if artifact == "" {
+		return
+	}
+	destination, err := filepath.Abs(filepath.Join(outputDir, path.Base(artifact)))
+	if err != nil {
+		return
+	}
+	root, err := filepath.EvalSymlinks(repoRoot)
+	if err != nil {
+		return
+	}
+	if destination = resolveExistingPrefix(destination); !pathInside(root, destination) {
+		return
+	}
+	relative, err := filepath.Rel(root, destination)
+	if err != nil {
+		return
+	}
+	if ignored, err := testScriptIgnored(ctx, root, filepath.ToSlash(relative)); err == nil && !ignored {
+		fmt.Fprintf(w, "Warning: %s is not excluded by .gitignore, so the next snapshot would push the decrypted artifact to the private repository. Add it (or %s/) to .gitignore.\n",
+			filepath.ToSlash(relative), filepath.ToSlash(filepath.Dir(relative)))
+	}
+}
+
+// resolveExistingPrefix resolves symlinks in the longest existing prefix of
+// an absolute path, whose remaining components may not exist yet.
+func resolveExistingPrefix(absolute string) string {
+	var missing []string
+	for current := absolute; ; current = filepath.Dir(current) {
+		if resolved, err := filepath.EvalSymlinks(current); err == nil {
+			return filepath.Join(append([]string{resolved}, missing...)...)
+		}
+		if filepath.Dir(current) == current {
+			return absolute
+		}
+		missing = append([]string{filepath.Base(current)}, missing...)
+	}
+}
+
 func printTestResult(w io.Writer, result *build.TestResult) {
 	fmt.Fprintln(w)
 	if len(result.Report) > 0 {
@@ -194,11 +313,23 @@ func printTestResult(w io.Writer, result *build.TestResult) {
 	} else {
 		fmt.Fprintf(w, "Tests failed (workflow concluded %s)\n", result.Conclusion)
 	}
+	if result.ArtifactPath != "" {
+		fmt.Fprintf(w, "Artifact: %s (%.1f MB)\n", result.ArtifactPath, float64(result.ArtifactSize)/(1024*1024))
+	}
 	if result.ReportPath != "" {
 		fmt.Fprintf(w, "Report: %s\n", result.ReportPath)
 	}
 	fmt.Fprintf(w, "Log: %s\n", result.LogPath)
-	fmt.Fprintf(w, "Workflow: %s\n", result.WorkflowURL)
+	switch {
+	case result.RunDeleted:
+		fmt.Fprintln(w, "Workflow run and its encrypted artifact deleted from the public builder")
+	case result.RunKept == build.RunKeptFailed:
+		fmt.Fprintf(w, "Workflow: %s (kept because %s; its encrypted artifact expires after one day)\n", result.WorkflowURL, result.RunKept)
+	case result.RunKept != "":
+		fmt.Fprintf(w, "Workflow: %s (kept because %s)\n", result.WorkflowURL, result.RunKept)
+	default:
+		fmt.Fprintf(w, "Workflow: %s\n", result.WorkflowURL)
+	}
 }
 
 // terminalSafe drops control characters other than newline and tab, so a

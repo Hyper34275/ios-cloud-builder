@@ -31,6 +31,7 @@ type (
 	ReactNativeConfig = config.ReactNativeConfig
 	KMPConfig         = config.KMPConfig
 	MobAIConfig       = config.MobAIConfig
+	WindowsConfig     = config.WindowsConfig
 	ValidationError   = config.ValidationError
 	Manager           = config.Manager
 )

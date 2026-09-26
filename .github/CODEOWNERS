@@ -4,5 +4,6 @@
 /internal/runner/ @ori2015
 /internal/security/ @ori2015
 /internal/build/central.go @ori2015
+/internal/build/centraltest.go @ori2015
 /docs/THREAT_MODEL.md @ori2015
 /COMPLIANCE.md @ori2015

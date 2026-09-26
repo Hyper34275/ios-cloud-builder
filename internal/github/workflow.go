@@ -1,7 +1,9 @@
 package github
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -16,6 +18,17 @@ var (
 	// ErrArtifactNotFound indicates that an exact artifact name is not yet
 	// present in the selected workflow run.
 	ErrArtifactNotFound = errors.New("artifact not found")
+	// ErrWorkflowRunBusy indicates that GitHub did not delete a run because it
+	// is still finishing, or because of a transient server error. Retrying
+	// shortly may succeed.
+	ErrWorkflowRunBusy = errors.New("workflow run is still finishing")
+)
+
+// Run titles of the central workflow, which puts the operation's fixed title
+// and the build ID in run-name.
+const (
+	IOSBuildRunTitlePrefix    = "iOS Build "
+	WindowsTestRunTitlePrefix = "Windows Test "
 )
 
 const (
@@ -165,11 +178,13 @@ func (c *Client) PollForWorkflowCompletion(ctx context.Context, owner, repo stri
 }
 
 func runTitleMatchesBuildID(title, workflowFile, buildID string) bool {
-	prefix := "iOS Build "
-	if workflowFile == "ios-share.yml" {
-		prefix = "iOS Simulator "
+	if buildID == "" {
+		return false
 	}
-	return buildID != "" && title == prefix+buildID
+	if workflowFile == "ios-share.yml" {
+		return title == "iOS Simulator "+buildID
+	}
+	return title == IOSBuildRunTitlePrefix+buildID || title == WindowsTestRunTitlePrefix+buildID
 }
 
 // PollForWorkflowStart polls until the run for buildID appears
@@ -252,11 +267,23 @@ func (c *Client) DownloadArtifactWithProgress(ctx context.Context, owner, repo s
 // maximum archive size. A non-positive maxBytes preserves the legacy
 // unbounded behavior used by the repository backend.
 func (c *Client) DownloadArtifactWithProgressLimit(ctx context.Context, owner, repo string, artifactID, maxBytes int64, progress ProgressFunc) ([]byte, error) {
+	var data bytes.Buffer
+	if _, err := c.DownloadArtifactTo(ctx, owner, repo, artifactID, maxBytes, &data, progress); err != nil {
+		return nil, err
+	}
+	return data.Bytes(), nil
+}
+
+// DownloadArtifactTo streams an artifact's ZIP archive into w, so a large
+// artifact never has to fit in memory, and returns the number of bytes
+// written. It fails once the archive exceeds a positive maxBytes; w may then
+// hold a partial archive, which the caller must discard.
+func (c *Client) DownloadArtifactTo(ctx context.Context, owner, repo string, artifactID, maxBytes int64, w io.Writer, progress ProgressFunc) (int64, error) {
 	path := fmt.Sprintf("/repos/%s/%s/actions/artifacts/%d/zip", owner, repo, artifactID)
 
 	resp, err := c.request(ctx, "GET", path, nil)
 	if err != nil {
-		return nil, err
+		return 0, err
 	}
 
 	if resp.StatusCode == http.StatusFound {
@@ -265,28 +292,28 @@ func (c *Client) DownloadArtifactWithProgressLimit(ctx context.Context, owner, r
 
 		redirectURL := resp.Header.Get("Location")
 		if redirectURL == "" {
-			return nil, fmt.Errorf("artifact redirect missing Location header")
+			return 0, fmt.Errorf("artifact redirect missing Location header")
 		}
 
 		req, err := http.NewRequestWithContext(ctx, "GET", redirectURL, nil)
 		if err != nil {
-			return nil, err
+			return 0, err
 		}
 
 		resp, err = c.httpClient.Do(req)
 		if err != nil {
-			return nil, err
+			return 0, err
 		}
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("failed to download artifact: status %d", resp.StatusCode)
+		return 0, fmt.Errorf("failed to download artifact: status %d", resp.StatusCode)
 	}
 
 	total := resp.ContentLength
 	if maxBytes > 0 && total > maxBytes {
-		return nil, fmt.Errorf("artifact archive is too large: %d bytes (limit %d)", total, maxBytes)
+		return 0, fmt.Errorf("artifact archive is too large: %d bytes (limit %d)", total, maxBytes)
 	}
 
 	reader := io.Reader(resp.Body)
@@ -296,15 +323,15 @@ func (c *Client) DownloadArtifactWithProgressLimit(ctx context.Context, owner, r
 	if maxBytes > 0 {
 		reader = io.LimitReader(reader, maxBytes+1)
 	}
-	data, err := io.ReadAll(reader)
+	written, err := io.Copy(w, reader)
 	if err != nil {
-		return nil, fmt.Errorf("failed to read artifact data: %w", err)
+		return written, fmt.Errorf("failed to read artifact data: %w", err)
 	}
-	if maxBytes > 0 && int64(len(data)) > maxBytes {
-		return nil, fmt.Errorf("artifact archive exceeds %d byte limit", maxBytes)
+	if maxBytes > 0 && written > maxBytes {
+		return written, fmt.Errorf("artifact archive exceeds %d byte limit", maxBytes)
 	}
 
-	return data, nil
+	return written, nil
 }
 
 type progressReader struct {
@@ -433,4 +460,34 @@ func (c *Client) DeleteArtifact(ctx context.Context, owner, repo string, artifac
 		return fmt.Errorf("failed to delete artifact (status %d): %s", resp.StatusCode, strings.TrimSpace(string(body)))
 	}
 	return nil
+}
+
+// DeleteWorkflowRun deletes a completed run, with its logs and any artifacts
+// it still has. A run that no longer exists counts as deleted. When GitHub
+// reports that the run is still finishing, or a transient server error, the
+// error wraps ErrWorkflowRunBusy and a retry shortly afterwards may succeed.
+// Deleting needs write access to the repository: the repo scope for an OAuth
+// or classic token, or Actions read and write for a fine-grained token.
+func (c *Client) DeleteWorkflowRun(ctx context.Context, owner, repo string, runID int64) error {
+	path := fmt.Sprintf("/repos/%s/%s/actions/runs/%d", owner, repo, runID)
+	resp, err := c.request(ctx, http.MethodDelete, path, nil)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusNoContent || resp.StatusCode == http.StatusNotFound {
+		return nil
+	}
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
+	message := strings.TrimSpace(string(body))
+	var apiErr APIError
+	if json.Unmarshal(body, &apiErr) == nil && apiErr.Message != "" {
+		message = apiErr.Message
+	}
+	lower := strings.ToLower(message)
+	if resp.StatusCode == http.StatusConflict || resp.StatusCode >= 500 ||
+		(resp.StatusCode == http.StatusForbidden && (strings.Contains(lower, "not completed") || strings.Contains(lower, "in progress"))) {
+		return fmt.Errorf("%w (status %d): %s", ErrWorkflowRunBusy, resp.StatusCode, message)
+	}
+	return fmt.Errorf("failed to delete workflow run (status %d): %s", resp.StatusCode, message)
 }

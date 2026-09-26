@@ -25,6 +25,7 @@ go install ./cmd/builder
 ./builder init              # Set up workflow in current repo
 ./builder ios build         # Trigger build and download IPA to ./dist/
 ./builder ios test          # Central backend: run ios.testScript on macos-26, decrypt log + report.md to ./dist/
+./builder windows test      # Central backend: run windows.testScript on windows-2025, decrypt log, report.md and windows.artifact to ./dist/
 ./builder dev flutter       # Flutter hot reload with MobAI
 ./builder dev rn            # React Native hot reload with MobAI
 ./builder dev kmp           # Kotlin Multiplatform install + launch (no hot reload)
