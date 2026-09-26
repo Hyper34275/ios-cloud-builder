@@ -200,6 +200,11 @@ func (c *Coordinator) Test(parent context.Context, opts TestOptions) (*TestResul
 		result.WorkflowURL = run.HTMLURL
 	}
 	if err != nil {
+		if run != nil {
+			// A run that did not complete was cancelled, never deleted.
+			result.RunKept = RunKeptNotRetrieved
+			return result, fmt.Errorf("%w (run kept: %s)", err, run.HTMLURL)
+		}
 		return result, err
 	}
 	retrieveCtx, cancelRetrieve := context.WithTimeout(parent, testRetrievalTimeout)
