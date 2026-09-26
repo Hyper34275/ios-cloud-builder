@@ -365,7 +365,7 @@ jobs:
   test:
     if: inputs.operation == 'test'
     runs-on: macos-26
-    timeout-minutes: 120
+    timeout-minutes: 150
     env:
       DEVELOPER_DIR: /Applications/Xcode_26.3.app/Contents/Developer
 
@@ -466,7 +466,7 @@ jobs:
             --script "$TEST_SCRIPT" \
             --log "$RUNNER_TEMP/private-output/test.log" \
             --report-dir "$RUNNER_TEMP/private-output/report" \
-            --timeout 105m \
+            --timeout 135m \
             --recipient "$ARTIFACT_RECIPIENT" \
             --output "$RUNNER_TEMP/encrypted"
 

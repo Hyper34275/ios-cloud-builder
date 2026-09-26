@@ -301,7 +301,7 @@ The runner executes `bash -- <script>` with the snapshot root as the working dir
 | `BUILDER_REPORT_DIR` | An empty private directory. Write an optional Markdown summary to `$BUILDER_REPORT_DIR/report.md`; the first 1 MiB is kept |
 
 - Exit status `0` means the tests passed. Any other status, a timeout, or a script that cannot start means they failed.
-- The script is stopped (SIGTERM, then SIGKILL after 30 seconds) after 105 minutes; the job's own limit is 120. Anything it leaves running in the background is stopped when it exits.
+- The script is stopped (SIGTERM, then SIGKILL after 30 seconds) after 135 minutes; the job's own limit is 150. Anything it leaves running in the background is stopped when it exits.
 - Otherwise the script sees the runner's normal environment (`PATH`, `HOME`, `DEVELOPER_DIR`, `CI=true`, Homebrew and the preinstalled toolchains) minus `GITHUB_STEP_SUMMARY`, `GITHUB_OUTPUT`, `GITHUB_ENV`, `GITHUB_PATH`, `GITHUB_STATE`, `GITHUB_TOKEN`, every `ACTIONS_*` and `INPUT_*` variable, and any variable whose name contains `TOKEN`, `SECRET`, `PASSWORD`, `PASSWD`, `PRIVATE_KEY`, `CREDENTIAL` or `AGE_IDENTITY`. The test job has no Apple credentials, no Environment and no signing job.
 - The test job does not detect frameworks or install toolchains; the script sets up what it needs (for example CocoaPods, a Flutter SDK, or `npm ci`).
 - A log larger than 60 MiB keeps its first 8 MiB and its end.

@@ -32,8 +32,8 @@ const (
 
 const (
 	// DefaultTestTimeout is how long `builder ios test` waits by default,
-	// including queueing; the workflow's test job itself is limited to 120 minutes.
-	DefaultTestTimeout = 2 * time.Hour
+	// including queueing; the workflow's test job itself is limited to 150 minutes.
+	DefaultTestTimeout = 2*time.Hour + 30*time.Minute
 	// DefaultWindowsTestTimeout is how long `builder windows test` waits by
 	// default, including queueing; the windows-test job is limited to 150 minutes.
 	DefaultWindowsTestTimeout = 150 * time.Minute

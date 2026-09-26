@@ -307,8 +307,8 @@ func TestCentralWorkflowTestOperation(t *testing.T) {
 		!strings.HasSuffix(workflow.RunName, "${{ inputs.build_id }}") {
 		t.Errorf("run-name = %q, want the operation's fixed title and the build ID", workflow.RunName)
 	}
-	if test.RunsOn != "macos-26" || test.TimeoutMinutes != 120 {
-		t.Errorf("test job runs-on %q with timeout %d, want macos-26 and 120", test.RunsOn, test.TimeoutMinutes)
+	if test.RunsOn != "macos-26" || test.TimeoutMinutes != 150 {
+		t.Errorf("test job runs-on %q with timeout %d, want macos-26 and 150", test.RunsOn, test.TimeoutMinutes)
 	}
 	if test.Environment != "" || test.Needs != "" || len(test.Outputs) != 0 {
 		t.Errorf("test job must have no Environment, dependency, or outputs: %+v", test)
@@ -407,7 +407,7 @@ func TestCentralWorkflowTestOperation(t *testing.T) {
 	for _, required := range []string{
 		`"$RUNNER_TEMP/builder-runner" execute-tests`, `--source "$GITHUB_WORKSPACE/source"`,
 		`--script "$TEST_SCRIPT"`, `--log "$RUNNER_TEMP/private-output/test.log"`,
-		`--report-dir "$RUNNER_TEMP/private-output/report"`, "--timeout 105m",
+		`--report-dir "$RUNNER_TEMP/private-output/report"`, "--timeout 135m",
 		`--recipient "$ARTIFACT_RECIPIENT"`, `--output "$RUNNER_TEMP/encrypted"`,
 	} {
 		if !strings.Contains(run.Run, required) {

@@ -161,7 +161,7 @@ func TestIOSTestCommandFlags(t *testing.T) {
 	if err != nil || found != iosTestCmd {
 		t.Fatalf("builder ios test is not registered: %v", err)
 	}
-	for name, want := range map[string]string{"script": "", "timeout": (2 * time.Hour).String(), "output": "dist", "remote": "origin", "keep-run": "false"} {
+	for name, want := range map[string]string{"script": "", "timeout": (2*time.Hour + 30*time.Minute).String(), "output": "dist", "remote": "origin", "keep-run": "false"} {
 		flag := iosTestCmd.Flags().Lookup(name)
 		if flag == nil || flag.DefValue != want {
 			t.Errorf("--%s default = %v, want %q", name, flag, want)
