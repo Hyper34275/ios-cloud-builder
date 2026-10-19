@@ -50,7 +50,7 @@ Local workstation (Linux/WSL/macOS; Windows through PowerShell/WSL):
 - A Git remote using an explicit `github.com` HTTPS or SSH URL
 - Builder CLI
 
-Builds use the stable `macos-15` runner image and test runs use `macos-26`; both select Xcode 26.3. Windows test runs use `windows-2025`. No local Mac, Xcode, certificate, or provisioning profile is required for an unsigned central build. TestFlight deployment requires an Apple Distribution certificate, one or more App Store distribution provisioning profiles, and an App Store Connect API key.
+Builds use the stable `macos-15` runner image and test runs use `macos-26` by default; both select Xcode 26.3. A test run can opt in to the `xcode-27` image with `--image xcode-27`. Windows test runs use `windows-2025`. No local Mac, Xcode, certificate, or provisioning profile is required for an unsigned central build. TestFlight deployment requires an Apple Distribution certificate, one or more App Store distribution provisioning profiles, and an App Store Connect API key.
 
 ## Install the CLI
 
@@ -266,11 +266,12 @@ Store Connect before uploading it.
 
 ## Running tests
 
-`builder ios test` runs the private project's own test suite on the public builder's `macos-26` runner (Xcode 26.3 and its iOS 26.2 simulators), with the same privacy model as a build:
+`builder ios test` runs the private project's own test suite on the public builder's `macos-26` runner (Xcode 26.3 and its iOS 26.2 simulators; `--image xcode-27` selects the Xcode 27 image, see [Runner image](#runner-image)), with the same privacy model as a build:
 
 ```bash
 builder ios test                                   # the script from ios.testScript
 builder ios test --script scripts/ios-test.sh --timeout 2h -o dist
+builder ios test --image xcode-27                  # macOS 27 and the newest Xcode 27.x
 ```
 
 Set the default script once in `builder.json`; `--script` overrides it:
@@ -278,6 +279,16 @@ Set the default script once in `builder.json`; `--script` overrides it:
 ```json
 "ios": { "path": "ios", "testScript": "scripts/ios-test.sh" }
 ```
+
+### Runner image
+
+By default a test run uses the `macos-26` image with Xcode 26.3. `--image xcode-27` (or `"testImage": "xcode-27"` under `ios` in `builder.json`; the flag wins) runs that one run on GitHub's `xcode-27` image instead: macOS 27 on arm64 with Xcode 27.x and its simulators, including the iPhone Duo simulator that ships with Xcode 27.1. The workflow selects the newest `/Applications/Xcode_27.<minor>.app` on the image and exports it as `DEVELOPER_DIR`, so a script should not assume a particular Xcode 27 minor version.
+
+```bash
+builder ios test --image xcode-27
+```
+
+The choice is a strict allowlist, `macos-26` or `xcode-27`, checked by the CLI, by the workflow's `test_image` choice input, and again by the trusted runner before any credential exists; the job's `runs-on` is one of those two literals, never an input's value. The paid `xcode-27-xlarge` and every other runner label are rejected. The default image is not sent at all, so the CLI keeps working against a builder workflow that predates the input; `--image xcode-27` needs a workflow that has it. Build and TestFlight jobs always stay on `macos-15`, and `builder windows test` has no image choice.
 
 The script is a file in the repository, named relative to the repository root with forward slashes, using only letters, digits, `.`, `_`, `+`, `-` and `/`, with no `..`, no `.git`, and no segment starting with `-`. Before snapshotting, the CLI checks that the file exists, stays inside the repository, and is not excluded by `.gitignore`. It then snapshots and dispatches like `ios build` (with `operation: test` and `test_script`), shows progress, downloads and decrypts the results, prints the report, and writes:
 
@@ -405,7 +416,7 @@ Deleting runs and artifacts needs write access to the builder repository. The CL
 - Cordova/Ionic generated iOS projects
 - XcodeGen manifests
 
-Schemes and workspaces/projects are detected where possible. The source build always passes `CODE_SIGNING_ALLOWED=NO` and packages the device `.app` as an unsigned IPA. In TestFlight mode, the separate protected job manually signs that app with the matching App Store provisioning profile from the protected multi-application bundle. App extensions in the app's `PlugIns` directory (widgets, Live Activities, share and notification extensions) are signed too, each with its own App Store profile, discovered or created through App Store Connect exactly like the app's, before the app itself; an extension's Bundle ID must extend the app's, and its build number is set to the app's. Watch apps, App Clips, XPC services, ExtensionKit extensions, and bundles nested inside an extension still require provisioning this job does not perform and are rejected rather than partially signed.
+Schemes and workspaces/projects are detected where possible. The source build always passes `CODE_SIGNING_ALLOWED=NO` and packages the device `.app` as an unsigned IPA. In TestFlight mode, the separate protected job manually signs that app with the matching App Store provisioning profile from the protected multi-application bundle. App extensions in the app's `PlugIns` directory (widgets, Live Activities, share and notification extensions) and an embedded watch app in `Watch/*.app` (with any `PlugIns/*.appex` inside it) are signed too, each with its own App Store profile, discovered or created through App Store Connect exactly like the app's (a watch app's Bundle ID is registered as an `IOS` identifier with an `IOS_APP_STORE` profile), inside out: extensions, then the watch app, then the app. An embedded bundle's Bundle ID must extend its container's; a watch app's `WKCompanionAppBundleIdentifier` must equal the app's Bundle ID; and every embedded bundle's build number is set to the app's, with the watch app and its extensions also taking the app's `CFBundleShortVersionString`. At most one watch app and 16 extensions per container are accepted. App Clips, XPC services, ExtensionKit extensions, and bundles nested deeper than a watch app's extensions still require provisioning this job does not perform and are rejected rather than partially signed.
 
 ## Repository backend and retained commands
 
@@ -465,7 +476,7 @@ go build ./cmd/builder-runner
 - Repository/source names and workflow inputs are public metadata even though source contents and outputs are encrypted.
 - A malicious project, dependency, or test script runs as the runner user and is not strongly sandboxed. On Windows that user is an administrator, and a deliberately hostile script can start processes outside its job object (through a service, a scheduled task, or WMI).
 - The central hosted-runner design has the policy caveat described in [COMPLIANCE.md](COMPLIANCE.md).
-- Central TestFlight supports multiple top-level applications by exact Bundle ID and signs their `PlugIns` app extensions, but still rejects Watch apps, App Clips, XPC services, ExtensionKit extensions, and bundles nested inside an extension.
+- Central TestFlight supports multiple top-level applications by exact Bundle ID and signs their `PlugIns` app extensions and an embedded `Watch/*.app` (with its own extensions), but still rejects App Clips, XPC services, ExtensionKit extensions, and bundles nested inside an extension.
 - A successful upload means App Store Connect accepted the binary; it does not mean Apple's asynchronous processing or review has completed.
 - Private GitHub SSH aliases are rejected in central mode because the CLI cannot prove an alias resolves to GitHub; use an explicit `git@github.com:OWNER/REPO.git` or `https://github.com/OWNER/REPO.git` remote.
 - Failed artifact deletion is non-fatal; ciphertext expires after one day. A test run that did not pass is kept on purpose, and a run whose deletion failed stays until it is deleted by hand or expires with the repository's log retention.

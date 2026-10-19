@@ -31,6 +31,7 @@ const (
 	maxProfiles       = 100
 	maxProfileBytes   = 512 * 1024
 	maxAppExtensions  = 16
+	maxWatchApps      = 1
 )
 
 var (
@@ -78,12 +79,32 @@ type provisioningProfileCandidate struct {
 	profile provisioningProfile
 }
 
-// appExtension is one app extension bundle from the application's PlugIns
-// directory. Each is its own App ID, so it is provisioned and signed with its
-// own App Store profile before the application that contains it.
-type appExtension struct {
-	path     string
-	bundleID string
+// embeddedKind says what an embedded bundle is, which decides how its bundle
+// identifier is validated against the bundle that contains it.
+type embeddedKind int
+
+const (
+	embeddedExtension embeddedKind = iota // PlugIns/*.appex, in the app or in a watch app
+	embeddedWatchApp                      // Watch/*.app
+)
+
+// embeddedBundle is one bundle nested in the application: an app extension
+// from a PlugIns directory or a watch application from the Watch directory.
+// Each is its own App ID, so it is provisioned and signed with its own App
+// Store profile before the bundle that contains it. parent is the path of
+// that containing bundle (the application, or a watch application).
+type embeddedBundle struct {
+	path   string
+	parent string
+	kind   embeddedKind
+}
+
+// embeddedBundleLabel names the bundle kind in error messages.
+func (kind embeddedKind) label() string {
+	if kind == embeddedWatchApp {
+		return "watch application"
+	}
+	return "app extension"
 }
 
 // signingTarget is one bundle and the entitlements it is signed with.
@@ -199,7 +220,7 @@ func deployTestFlight(ctx context.Context, options *TestFlightOptions, credentia
 	if err != nil {
 		return err
 	}
-	extensionPaths, err := discoverAppExtensions(appPath)
+	embedded, err := discoverEmbeddedBundles(appPath)
 	if err != nil {
 		return err
 	}
@@ -213,23 +234,28 @@ func deployTestFlight(ctx context.Context, options *TestFlightOptions, credentia
 	if err != nil {
 		return err
 	}
-	extensions := make([]appExtension, 0, len(extensionPaths))
-	seenBundleIDs := map[string]bool{bundleID: true}
-	for _, extensionPath := range extensionPaths {
-		extensionID, idErr := readExtensionBundleID(extensionPath, bundleID)
-		if idErr != nil {
-			return idErr
-		}
-		if seenBundleIDs[extensionID] {
-			return fmt.Errorf("app extension bundle identifiers must be unique")
-		}
-		seenBundleIDs[extensionID] = true
-		// App Store Connect refuses an extension whose build number differs
-		// from its application's, and the application's was just replaced.
-		if err := setBundleBuildNumber(filepath.Join(extensionPath, "Info.plist"), options.BuildNumber); err != nil {
+	shortVersion, err := readBundleShortVersion(filepath.Join(appPath, "Info.plist"))
+	if err != nil {
+		return err
+	}
+	embeddedIDs, err := validateEmbeddedBundles(embedded, appPath, bundleID)
+	if err != nil {
+		return err
+	}
+	for _, bundle := range embedded {
+		// App Store Connect refuses an embedded bundle whose build number
+		// differs from its application's, and the application's was just
+		// replaced. A watch application and its extensions must also carry
+		// the companion application's marketing version.
+		infoPath := filepath.Join(bundle.path, "Info.plist")
+		if err := setBundleBuildNumber(infoPath, options.BuildNumber); err != nil {
 			return err
 		}
-		extensions = append(extensions, appExtension{path: extensionPath, bundleID: extensionID})
+		if shortVersion != "" && isInsideWatchApp(embedded, bundle) {
+			if err := setBundleShortVersion(infoPath, shortVersion); err != nil {
+				return err
+			}
+		}
 	}
 
 	secretsDir := filepath.Join(workRoot, "credentials")
@@ -393,22 +419,22 @@ func deployTestFlight(ctx context.Context, options *TestFlightOptions, credentia
 	if err := prepareBundle(application.path, selected, application.entitlementsPath); err != nil {
 		return err
 	}
-	extensionTargets := make([]signingTarget, 0, len(extensions))
-	for index, extension := range extensions {
-		selected, err := resolveProfile(extension.bundleID, filepath.Join(secretsDir, fmt.Sprintf("profiles-extension-%02d", index)))
+	embeddedTargets := make([]signingTarget, 0, len(embedded))
+	for index, bundle := range embedded {
+		selected, err := resolveProfile(embeddedIDs[index], filepath.Join(secretsDir, fmt.Sprintf("profiles-embedded-%02d", index)))
 		if err != nil {
-			return fmt.Errorf("app extension %s: %w", extension.bundleID, err)
+			return fmt.Errorf("%s %s: %w", bundle.kind.label(), embeddedIDs[index], err)
 		}
 		target := signingTarget{
-			path:             extension.path,
-			entitlementsPath: filepath.Join(secretsDir, fmt.Sprintf("entitlements-extension-%02d.plist", index)),
+			path:             bundle.path,
+			entitlementsPath: filepath.Join(secretsDir, fmt.Sprintf("entitlements-embedded-%02d.plist", index)),
 		}
 		if err := prepareBundle(target.path, selected, target.entitlementsPath); err != nil {
 			return err
 		}
-		extensionTargets = append(extensionTargets, target)
+		embeddedTargets = append(embeddedTargets, target)
 	}
-	if err := signApplication(run, application, extensionTargets, signingIdentity, keychainPath); err != nil {
+	if err := signApplication(run, application, embeddedTargets, signingIdentity, keychainPath); err != nil {
 		return err
 	}
 
@@ -548,68 +574,228 @@ func extractUnsignedIPA(ipaPath, destinationRoot string) (string, error) {
 	return apps[0], nil
 }
 
-// discoverAppExtensions returns every app extension bundle directly inside
-// the application's PlugIns directory, and fails closed on any other nested
-// application.
+// discoverEmbeddedBundles returns every embedded bundle this runner signs, in
+// signing order (inside out), and fails closed on any other nested bundle.
 //
-// PlugIns/*.appex is the one nested layout this runner signs: each such
-// extension is an App ID of its own whose App Store profile comes from the
-// same discovery that serves the application. Watch applications, App Clips,
-// XPC services, ExtensionKit extensions and bundles nested inside an
-// extension need provisioning this runner does not perform, so they are
+// Two layouts are signed. PlugIns/*.appex in the application is an app
+// extension. Watch/*.app is a watch application, and a watch application may
+// itself hold PlugIns/*.appex. Each is an App ID of its own whose App Store
+// profile comes from the same discovery that serves the application. The
+// result lists the application's extensions first, then for each watch
+// application its extensions followed by the watch application itself, so
+// every bundle is signed before the bundle that contains it.
+//
+// App Clips, XPC services, ExtensionKit extensions, a second Watch or PlugIns
+// directory elsewhere, and bundles nested deeper than a watch application's
+// extensions need provisioning this runner does not perform, so they are
 // refused rather than uploaded half-signed.
-func discoverAppExtensions(appPath string) ([]string, error) {
+func discoverEmbeddedBundles(appPath string) ([]embeddedBundle, error) {
 	pluginsRoot := filepath.Join(appPath, "PlugIns")
-	var extensions []string
+	watchRoot := filepath.Join(appPath, "Watch")
+	var extensions, watchApps, watchExtensions []embeddedBundle
+	counts := map[string]int{}
+	isWatchApp := func(dir string) bool {
+		for _, watch := range watchApps {
+			if watch.path == dir {
+				return true
+			}
+		}
+		return false
+	}
 	err := filepath.WalkDir(appPath, func(current string, entry os.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
-		if current == appPath || current == pluginsRoot || !entry.IsDir() {
+		if current == appPath || !entry.IsDir() {
 			return nil
 		}
 		name := strings.ToLower(entry.Name())
-		if filepath.Dir(current) == pluginsRoot {
+		parent := filepath.Dir(current)
+		switch {
+		case parent == pluginsRoot:
 			if !strings.HasSuffix(name, ".appex") {
 				return fmt.Errorf("PlugIns may contain only app extension bundles")
 			}
-			if len(extensions) == maxAppExtensions {
+			if counts[appPath]++; counts[appPath] > maxAppExtensions {
 				return fmt.Errorf("application contains more than %d app extensions", maxAppExtensions)
 			}
-			extensions = append(extensions, current)
+			extensions = append(extensions, embeddedBundle{path: current, parent: appPath, kind: embeddedExtension})
+			return nil
+		case parent == watchRoot:
+			if !strings.HasSuffix(name, ".app") {
+				return fmt.Errorf("the Watch directory may contain only watch application bundles")
+			}
+			if len(watchApps) == maxWatchApps {
+				return fmt.Errorf("application contains more than %d watch application", maxWatchApps)
+			}
+			watchApps = append(watchApps, embeddedBundle{path: current, parent: appPath, kind: embeddedWatchApp})
+			return nil
+		case current == pluginsRoot || current == watchRoot:
+			return nil
+		case entry.Name() == "PlugIns" && isWatchApp(parent):
+			return nil
+		case filepath.Base(parent) == "PlugIns" && isWatchApp(filepath.Dir(parent)):
+			if !strings.HasSuffix(name, ".appex") {
+				return fmt.Errorf("a watch application's PlugIns may contain only app extension bundles")
+			}
+			watch := filepath.Dir(parent)
+			if counts[watch]++; counts[watch] > maxAppExtensions {
+				return fmt.Errorf("watch application contains more than %d app extensions", maxAppExtensions)
+			}
+			watchExtensions = append(watchExtensions, embeddedBundle{path: current, parent: watch, kind: embeddedExtension})
 			return nil
 		}
 		if strings.HasSuffix(name, ".appex") || strings.HasSuffix(name, ".app") ||
 			strings.HasSuffix(name, ".xpc") || name == "plugins" || name == "watch" ||
 			name == "appclips" || name == "xpcservices" {
-			if pathWithin(pluginsRoot, current) {
-				return fmt.Errorf("bundles nested inside an app extension are not supported")
+			for _, extension := range append(append([]embeddedBundle(nil), extensions...), watchExtensions...) {
+				if pathWithin(extension.path, current) {
+					return fmt.Errorf("bundles nested inside an app extension are not supported")
+				}
 			}
-			return fmt.Errorf("embedded applications other than PlugIns app extensions require provisioning that is not supported")
+			return fmt.Errorf("embedded applications other than PlugIns app extensions and the Watch application require provisioning that is not supported")
 		}
 		return nil
 	})
 	if err != nil {
 		return nil, err
 	}
-	return extensions, nil
+	ordered := append([]embeddedBundle(nil), extensions...)
+	for _, watch := range watchApps {
+		for _, extension := range watchExtensions {
+			if extension.parent == watch.path {
+				ordered = append(ordered, extension)
+			}
+		}
+		ordered = append(ordered, watch)
+	}
+	return ordered, nil
 }
 
-// readExtensionBundleID reads an app extension's bundle identifier and
-// requires it to extend the application's, as App Store Connect does. Holding
-// it to that here is also what keeps a project from steering this runner into
-// registering or provisioning an arbitrary identifier in the team's account.
-func readExtensionBundleID(extensionPath, applicationBundleID string) (string, error) {
-	bundleID, err := readBundleID(filepath.Join(extensionPath, "Info.plist"))
-	if err != nil {
-		return "", fmt.Errorf("read app extension bundle identifier")
+// isInsideWatchApp reports whether bundle is a watch application or one of its
+// extensions.
+func isInsideWatchApp(all []embeddedBundle, bundle embeddedBundle) bool {
+	if bundle.kind == embeddedWatchApp {
+		return true
 	}
-	suffix, extendsApplication := strings.CutPrefix(bundleID, applicationBundleID+".")
-	if !extendsApplication || suffix == "" || strings.HasPrefix(suffix, ".") ||
+	for _, other := range all {
+		if other.kind == embeddedWatchApp && other.path == bundle.parent {
+			return true
+		}
+	}
+	return false
+}
+
+// validateEmbeddedBundles reads every embedded bundle's identifier (in the
+// order of bundles) and enforces what ties it to the bundle that contains it.
+// An identifier must extend its container's, as App Store Connect requires;
+// holding it to that here is also what keeps a project from steering this
+// runner into registering or provisioning an arbitrary identifier in the
+// team's account. A watch application must also name the application as its
+// companion in WKCompanionAppBundleIdentifier. Identifiers must be unique.
+func validateEmbeddedBundles(bundles []embeddedBundle, appPath, applicationBundleID string) ([]string, error) {
+	ids := map[string]string{appPath: applicationBundleID}
+	result := make([]string, len(bundles))
+	seen := map[string]bool{applicationBundleID: true}
+	// bundles is in signing order, so a watch application is read after its
+	// extensions; read the watch applications first, since an extension is
+	// held to its watch application's identifier.
+	for pass := 0; pass < 2; pass++ {
+		for index, bundle := range bundles {
+			if (pass == 0) != (bundle.kind == embeddedWatchApp) {
+				continue
+			}
+			containerID := ids[bundle.parent]
+			bundleID, err := readEmbeddedBundleID(bundle.path, containerID, bundle.kind)
+			if err != nil {
+				return nil, err
+			}
+			if seen[bundleID] {
+				return nil, fmt.Errorf("embedded bundle identifiers must be unique")
+			}
+			seen[bundleID] = true
+			if bundle.kind == embeddedWatchApp {
+				companion, err := readWatchCompanionID(bundle.path)
+				if err != nil {
+					return nil, err
+				}
+				if companion != applicationBundleID {
+					return nil, fmt.Errorf("watch application WKCompanionAppBundleIdentifier must equal the application's bundle identifier")
+				}
+				ids[bundle.path] = bundleID
+			}
+			result[index] = bundleID
+		}
+	}
+	return result, nil
+}
+
+// readEmbeddedBundleID reads an embedded bundle's identifier and requires it
+// to extend its container's identifier.
+func readEmbeddedBundleID(bundlePath, containerBundleID string, kind embeddedKind) (string, error) {
+	bundleID, err := readBundleID(filepath.Join(bundlePath, "Info.plist"))
+	if err != nil {
+		return "", fmt.Errorf("read %s bundle identifier", kind.label())
+	}
+	suffix, extendsContainer := strings.CutPrefix(bundleID, containerBundleID+".")
+	if !extendsContainer || suffix == "" || strings.HasPrefix(suffix, ".") ||
 		strings.HasSuffix(suffix, ".") || !bundleIDPattern.MatchString(bundleID) {
-		return "", fmt.Errorf("app extension bundle identifier must extend the application's bundle identifier")
+		return "", fmt.Errorf("%s bundle identifier must extend the containing bundle's identifier", kind.label())
 	}
 	return bundleID, nil
+}
+
+// readWatchCompanionID reads the iOS application a watch application declares
+// as its companion.
+func readWatchCompanionID(watchPath string) (string, error) {
+	data, err := os.ReadFile(filepath.Join(watchPath, "Info.plist"))
+	if err != nil || len(data) > 4*1024*1024 {
+		return "", fmt.Errorf("read watch application Info.plist")
+	}
+	var info struct {
+		Companion string `plist:"WKCompanionAppBundleIdentifier"`
+	}
+	if _, err := plist.Unmarshal(data, &info); err != nil || info.Companion == "" {
+		return "", fmt.Errorf("watch application has no WKCompanionAppBundleIdentifier")
+	}
+	return info.Companion, nil
+}
+
+// readBundleShortVersion returns CFBundleShortVersionString, or "" if unset.
+func readBundleShortVersion(infoPath string) (string, error) {
+	data, err := os.ReadFile(infoPath)
+	if err != nil || len(data) > 4*1024*1024 {
+		return "", fmt.Errorf("read application Info.plist")
+	}
+	var info struct {
+		Version string `plist:"CFBundleShortVersionString"`
+	}
+	if _, err := plist.Unmarshal(data, &info); err != nil || strings.ContainsAny(info.Version, "\r\n\x00") {
+		return "", fmt.Errorf("read application version")
+	}
+	return info.Version, nil
+}
+
+// setBundleShortVersion sets CFBundleShortVersionString.
+func setBundleShortVersion(infoPath, version string) error {
+	info, err := os.Lstat(infoPath)
+	if err != nil || !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 || info.Size() > 4*1024*1024 {
+		return fmt.Errorf("inspect embedded bundle Info.plist")
+	}
+	data, err := os.ReadFile(infoPath)
+	if err != nil {
+		return fmt.Errorf("read embedded bundle Info.plist")
+	}
+	var values map[string]any
+	if _, err := plist.Unmarshal(data, &values); err != nil || values == nil {
+		return fmt.Errorf("parse embedded bundle Info.plist")
+	}
+	values["CFBundleShortVersionString"] = version
+	updated, err := plist.Marshal(values, plist.BinaryFormat)
+	if err != nil || os.WriteFile(infoPath, updated, info.Mode().Perm()) != nil {
+		return fmt.Errorf("update embedded bundle version")
+	}
+	return nil
 }
 
 func setBundleBuildNumber(infoPath, buildNumber string) error {
@@ -688,23 +874,27 @@ func altoolArgs(operation, ipaPath string, credentials *appleCredentials) []stri
 	return args
 }
 
-// signApplication signs from the inside out: each app extension's own nested
-// code and then the extension with its entitlements, and only after that the
-// application, whose seal records every signature inside it.
-func signApplication(run executor, application signingTarget, extensions []signingTarget, identity, keychainPath string) error {
-	for _, extension := range extensions {
-		if err := signBundle(run, extension, "", identity, keychainPath); err != nil {
+// signApplication signs from the inside out: embedded lists every extension
+// and watch application with each bundle ahead of the one that contains it, so
+// each is signed with its own nested code and entitlements, and only after
+// that the application, whose seal records every signature inside it.
+func signApplication(run executor, application signingTarget, embedded []signingTarget, identity, keychainPath string) error {
+	for _, bundle := range embedded {
+		if err := signBundle(run, bundle, identity, keychainPath); err != nil {
 			return err
 		}
 	}
-	if err := signBundle(run, application, filepath.Join(application.path, "PlugIns"), identity, keychainPath); err != nil {
+	if err := signBundle(run, application, identity, keychainPath); err != nil {
 		return err
 	}
 	return run.run(filepath.Dir(application.path), "/usr/bin/codesign", "--verify", "--deep", "--strict", application.path)
 }
 
-func signBundle(run executor, target signingTarget, skip, identity, keychainPath string) error {
-	nested, err := nestedCode(target.path, skip)
+// signBundle signs a bundle's own frameworks and dynamic libraries and then
+// the bundle. Its PlugIns and Watch directories are left alone: what they hold
+// was already signed with entitlements of its own.
+func signBundle(run executor, target signingTarget, identity, keychainPath string) error {
+	nested, err := nestedCode(target.path, filepath.Join(target.path, "PlugIns"), filepath.Join(target.path, "Watch"))
 	if err != nil {
 		return err
 	}
@@ -717,9 +907,9 @@ func signBundle(run executor, target signingTarget, skip, identity, keychainPath
 }
 
 // nestedCode lists the frameworks and dynamic libraries inside a bundle,
-// deepest first, leaving out skip: the application's PlugIns, whose
-// extensions are already signed with entitlements of their own by then.
-func nestedCode(bundlePath, skip string) ([]string, error) {
+// deepest first, leaving out the skip directories: the PlugIns and Watch
+// bundles that are already signed by then.
+func nestedCode(bundlePath string, skip ...string) ([]string, error) {
 	var nested []string
 	err := filepath.WalkDir(bundlePath, func(path string, entry os.DirEntry, err error) error {
 		if err != nil {
@@ -728,8 +918,12 @@ func nestedCode(bundlePath, skip string) ([]string, error) {
 		if path == bundlePath {
 			return nil
 		}
-		if entry.IsDir() && skip != "" && path == skip {
-			return filepath.SkipDir
+		if entry.IsDir() {
+			for _, skipped := range skip {
+				if skipped != "" && path == skipped {
+					return filepath.SkipDir
+				}
+			}
 		}
 		if entry.IsDir() && strings.HasSuffix(entry.Name(), ".framework") {
 			nested = append(nested, path)

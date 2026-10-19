@@ -95,7 +95,7 @@ func TestCentralWorkflowSecurityProperties(t *testing.T) {
 		"operation:", "environment: apple-production", "APPLE_SIGNING_RECIPIENT",
 		"APPLE_SIGNING_AGE_IDENTITY", "APPLE_DISTRIBUTION_P12", "APPLE_PROVISIONING_PROFILE", "APPLE_PROVISIONING_PROFILES",
 		"ASC_API_KEY_P8", "deploy-testflight", "--build-number", "needs.build.outputs.build_number", "github.run_attempt", "ios-builder-deploy-${{ inputs.build_id }}",
-		"runs-on: macos-26", "test_script:", "execute-tests", "encrypted/test.log.age", "encrypted/report.md.age",
+		"runs-on: ${{ inputs.test_image == 'xcode-27' && 'xcode-27' || 'macos-26' }}", "test_image:", "test_script:", "execute-tests", "encrypted/test.log.age", "encrypted/report.md.age",
 		"runs-on: windows-2025", "artifact_path:", "windows-test", "encrypted/artifact.age", "shell: pwsh",
 	} {
 		if !strings.Contains(text, required) {
@@ -307,14 +307,27 @@ func TestCentralWorkflowTestOperation(t *testing.T) {
 		!strings.HasSuffix(workflow.RunName, "${{ inputs.build_id }}") {
 		t.Errorf("run-name = %q, want the operation's fixed title and the build ID", workflow.RunName)
 	}
-	if test.RunsOn != "macos-26" || test.TimeoutMinutes != 150 {
-		t.Errorf("test job runs-on %q with timeout %d, want macos-26 and 150", test.RunsOn, test.TimeoutMinutes)
+	// The runner label is never taken from an input: it is one of two literals
+	// chosen by comparing the test_image choice, so any other value falls back
+	// to the default image.
+	if test.RunsOn != "${{ inputs.test_image == 'xcode-27' && 'xcode-27' || 'macos-26' }}" || test.TimeoutMinutes != 150 {
+		t.Errorf("test job runs-on %q with timeout %d, want the test_image allowlist and 150", test.RunsOn, test.TimeoutMinutes)
+	}
+	image := inputs["test_image"]
+	if image.Required || image.Type != "choice" || image.Default != "macos-26" || !reflect.DeepEqual(image.Options, []string{"macos-26", "xcode-27"}) {
+		t.Errorf("test_image input = %+v, want an optional choice of exactly macos-26 and xcode-27 defaulting to macos-26", image)
+	}
+	for name, job := range workflow.Jobs {
+		if name != "test" && strings.Contains(job.RunsOn, "inputs.") {
+			t.Errorf("job %s takes its runner from an input: %q", name, job.RunsOn)
+		}
 	}
 	if test.Environment != "" || test.Needs != "" || len(test.Outputs) != 0 {
 		t.Errorf("test job must have no Environment, dependency, or outputs: %+v", test)
 	}
-	if !reflect.DeepEqual(test.Env, build.Env) || !strings.HasPrefix(test.Env["DEVELOPER_DIR"], "/Applications/Xcode_26") {
-		t.Errorf("test job env %v must mirror the build job's Xcode selection %v", test.Env, build.Env)
+	// DEVELOPER_DIR is chosen by the "Select Xcode" step, not a job-level env.
+	if len(test.Env) != 0 {
+		t.Errorf("test job env = %v, want none: Xcode is selected by a step", test.Env)
 	}
 
 	// Validation, token minting, checkout, and revocation are the build job's
@@ -330,6 +343,7 @@ func TestCentralWorkflowTestOperation(t *testing.T) {
 		"Verify checkout credential cleanup",
 	}
 	wantSteps := append(append([]string{}, shared...),
+		"Select Xcode for the runner image",
 		"Run project tests and encrypt private outputs",
 		"Upload ciphertext only",
 		"Report private test status",
@@ -354,8 +368,12 @@ func TestCentralWorkflowTestOperation(t *testing.T) {
 	if validate.Env["ARTIFACT_PATH"] != "${{ inputs.artifact_path }}" || !strings.Contains(validate.Run, `--artifact-path "$ARTIFACT_PATH"`) {
 		t.Error("artifact_path is not validated (and so rejected) before credential creation")
 	}
+	if validate.Env["TEST_IMAGE"] != "${{ inputs.test_image }}" || !strings.Contains(validate.Run, `--test-image "$TEST_IMAGE"`) {
+		t.Error("test_image is not validated before credential creation")
+	}
 	revokeIndex := stepIndex(&test, "Revoke private repository token before project code")
 	runIndex := stepIndex(&test, "Run project tests and encrypt private outputs")
+	selectIndex := stepIndex(&test, "Select Xcode for the runner image")
 	if revoke := test.Steps[revokeIndex]; revokeIndex > runIndex || revoke.If != "always() && steps.source-token.outcome == 'success'" ||
 		!strings.Contains(revoke.Run, "revoke-token") {
 		t.Error("the private repository token is not revoked before the test script runs")
@@ -393,6 +411,16 @@ func TestCentralWorkflowTestOperation(t *testing.T) {
 				t.Errorf("test job uses unexpected action %s", step.Uses)
 			}
 		}
+	}
+
+	// Xcode is selected from the validated image by a fixed case statement;
+	// the only input it sees is test_image, through env, and it runs no
+	// project code. Anything but xcode-27 selects Xcode 26.3.
+	selectXcode := test.Steps[selectIndex]
+	if selectIndex > runIndex || !reflect.DeepEqual(selectXcode.Env, map[string]string{"TEST_IMAGE": "${{ inputs.test_image }}"}) ||
+		!strings.Contains(selectXcode.Run, "xcode-27)") || !strings.Contains(selectXcode.Run, "xcode=/Applications/Xcode_26.3.app") ||
+		!strings.Contains(selectXcode.Run, `>> "$GITHUB_ENV"`) || strings.Contains(selectXcode.Run, "source") {
+		t.Errorf("Select Xcode step = %+v", selectXcode)
 	}
 
 	// The script runs only through the trusted runner, with inputs as env.

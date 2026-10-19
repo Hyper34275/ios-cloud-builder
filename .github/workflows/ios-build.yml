@@ -76,6 +76,14 @@ on:
         required: false
         default: ''
         type: string
+      test_image:
+        description: Runner image for operation test; xcode-27 is macOS 27 with the newest Xcode 27.x
+        required: false
+        default: macos-26
+        type: choice
+        options:
+          - macos-26
+          - xcode-27
 
 permissions:
   contents: read
@@ -123,6 +131,7 @@ jobs:
           OPERATION: ${{ inputs.operation }}
           TEST_SCRIPT: ${{ inputs.test_script }}
           ARTIFACT_PATH: ${{ inputs.artifact_path }}
+          TEST_IMAGE: ${{ inputs.test_image }}
         run: |
           "$RUNNER_TEMP/builder-runner" validate-inputs \
             --build-id "$BUILD_ID" \
@@ -136,7 +145,8 @@ jobs:
             --artifact-recipient "$ARTIFACT_RECIPIENT" \
             --operation "$OPERATION" \
             --test-script "$TEST_SCRIPT" \
-            --artifact-path "$ARTIFACT_PATH"
+            --artifact-path "$ARTIFACT_PATH" \
+            --test-image "$TEST_IMAGE"
 
       - name: Create repository-scoped GitHub App token
         id: source-token
@@ -364,10 +374,8 @@ jobs:
 
   test:
     if: inputs.operation == 'test'
-    runs-on: macos-26
+    runs-on: ${{ inputs.test_image == 'xcode-27' && 'xcode-27' || 'macos-26' }}
     timeout-minutes: 150
-    env:
-      DEVELOPER_DIR: /Applications/Xcode_26.3.app/Contents/Developer
 
     steps:
       - name: Checkout trusted public builder
@@ -402,6 +410,7 @@ jobs:
           OPERATION: ${{ inputs.operation }}
           TEST_SCRIPT: ${{ inputs.test_script }}
           ARTIFACT_PATH: ${{ inputs.artifact_path }}
+          TEST_IMAGE: ${{ inputs.test_image }}
         run: |
           "$RUNNER_TEMP/builder-runner" validate-inputs \
             --build-id "$BUILD_ID" \
@@ -415,7 +424,8 @@ jobs:
             --artifact-recipient "$ARTIFACT_RECIPIENT" \
             --operation "$OPERATION" \
             --test-script "$TEST_SCRIPT" \
-            --artifact-path "$ARTIFACT_PATH"
+            --artifact-path "$ARTIFACT_PATH" \
+            --test-image "$TEST_IMAGE"
 
       - name: Create repository-scoped GitHub App token
         id: source-token
@@ -451,6 +461,39 @@ jobs:
       - name: Verify checkout credential cleanup
         run: |
           "$RUNNER_TEMP/builder-runner" verify-checkout --source "$GITHUB_WORKSPACE/source"
+
+      - name: Select Xcode for the runner image
+        env:
+          TEST_IMAGE: ${{ inputs.test_image }}
+        run: |
+          case "$TEST_IMAGE" in
+            xcode-27)
+              # Newest Xcode_27.<minor>.app, the image's symlink names. Bundle
+              # names with a patch, beta or release-candidate suffix are skipped.
+              best=-1
+              xcode=
+              for app in /Applications/Xcode_27.*.app; do
+                minor="${app##*/Xcode_27.}"
+                minor="${minor%.app}"
+                case "$minor" in
+                  ''|*[!0-9]*) continue ;;
+                esac
+                if [ "$minor" -gt "$best" ]; then
+                  best="$minor"
+                  xcode="$app"
+                fi
+              done
+              ;;
+            *)
+              xcode=/Applications/Xcode_26.3.app
+              ;;
+          esac
+          if [ -z "$xcode" ] || [ ! -d "$xcode/Contents/Developer" ]; then
+            echo "No suitable Xcode found for image $TEST_IMAGE."
+            exit 1
+          fi
+          echo "Using ${xcode##*/}"
+          echo "DEVELOPER_DIR=$xcode/Contents/Developer" >> "$GITHUB_ENV"
 
       - name: Run project tests and encrypt private outputs
         id: secure-test
@@ -547,6 +590,7 @@ jobs:
           OPERATION: ${{ inputs.operation }}
           TEST_SCRIPT: ${{ inputs.test_script }}
           ARTIFACT_PATH: ${{ inputs.artifact_path }}
+          TEST_IMAGE: ${{ inputs.test_image }}
         run: |
           & "$env:RUNNER_TEMP\builder-runner.exe" validate-inputs `
             "--build-id=$env:BUILD_ID" `
@@ -560,7 +604,8 @@ jobs:
             "--artifact-recipient=$env:ARTIFACT_RECIPIENT" `
             "--operation=$env:OPERATION" `
             "--test-script=$env:TEST_SCRIPT" `
-            "--artifact-path=$env:ARTIFACT_PATH"
+            "--artifact-path=$env:ARTIFACT_PATH" `
+            "--test-image=$env:TEST_IMAGE"
           exit $LASTEXITCODE
 
       - name: Create repository-scoped GitHub App token

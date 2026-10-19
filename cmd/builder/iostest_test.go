@@ -60,6 +60,51 @@ func TestResolveTestScript(t *testing.T) {
 	}
 }
 
+func TestResolveTestImage(t *testing.T) {
+	tests := []struct {
+		name, flag, config, want, wantErr string
+	}{
+		{name: "neither is the default image"},
+		{name: "flag", flag: "xcode-27", want: "xcode-27"},
+		{name: "flag default", flag: "macos-26", want: "macos-26"},
+		{name: "config", config: "xcode-27", want: "xcode-27"},
+		{name: "flag overrides config", flag: "macos-26", config: "xcode-27", want: "macos-26"},
+		{name: "flag is trimmed", flag: " xcode-27 ", want: "xcode-27"},
+		{name: "xlarge is paid and not allowed", flag: "xcode-27-xlarge", wantErr: `runner image "xcode-27-xlarge" from --image must be one of macos-26, xcode-27`},
+		{name: "free-form label", flag: "ubuntu-latest", wantErr: "from --image"},
+		{name: "self-hosted", flag: "self-hosted", wantErr: "from --image"},
+		{name: "wrong case", flag: "Xcode-27", wantErr: "from --image"},
+		{name: "bad config", config: "macos-15", wantErr: "from ios.testImage in builder.json"},
+		{name: "valid flag does not hide a bad config", flag: "xcode-27", config: "macos-15", want: "xcode-27"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			got, err := resolveTestImage(test.flag, test.config)
+			if test.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), test.wantErr) {
+					t.Fatalf("resolveTestImage() = %q, %v; want error containing %q", got, err, test.wantErr)
+				}
+				return
+			}
+			if err != nil || got != test.want {
+				t.Fatalf("resolveTestImage() = %q, %v; want %q", got, err, test.want)
+			}
+		})
+	}
+}
+
+func TestImageFlagIsOnlyOnIOSTest(t *testing.T) {
+	if iosTestCmd.Flags().Lookup("image") == nil {
+		t.Error("builder ios test has no --image flag")
+	}
+	if windowsTestCmd.Flags().Lookup("image") != nil {
+		t.Error("builder windows test must not have --image")
+	}
+	if got := iosTestCmd.Flags().Lookup("image").DefValue; got != "" {
+		t.Errorf("--image default = %q, want empty (the default image)", got)
+	}
+}
+
 func TestResolveTestScriptRejectsSymlinkEscape(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("creating symlinks needs privileges on Windows")

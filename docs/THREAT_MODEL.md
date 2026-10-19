@@ -40,6 +40,8 @@ The trusted Go helper validates UUID, owner, repository, exact snapshot ref, rel
 
 The one script input, `test_script`, is accepted only with `operation: test` or `operation: windows-test` and rejected otherwise; for `windows-test` it must end in `.ps1` or `.sh`. Before credentials exist it must be a clean relative path of portable characters with no `..`, `.git`, control characters, backslashes, segment starting with `-`, or segment ending in `.` (Windows drops a trailing dot, so `.git.` would name `.git`). After checkout it must resolve, symlinks included, to a regular file inside the snapshot and outside `.git`. It reaches the runner only through an environment variable and runs as `bash -- <path>`, or for a `.ps1` as `pwsh -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File <path>`; it is never interpolated into a shell command, so it names a file from the authorized snapshot and cannot carry a command.
 
+`test_image` is a `choice` input of exactly `macos-26` and `xcode-27`, and the test job's `runs-on` is one of those two literals selected by comparing it, so the input never becomes a runner label itself and the paid `xcode-27-xlarge` label cannot be reached. The trusted runner validates it again before credentials exist, accepts `xcode-27` only for `operation: test`, and the Xcode selection step sees it only through an environment variable and a fixed `case`, writing `DEVELOPER_DIR` from a glob of `/Applications` before any project code runs.
+
 `artifact_path` is accepted only with `operation: windows-test`, with the same path rules, and is never executed: after the script exits 0 the runner resolves it again, symlinks included, and reads it only as a regular file inside the snapshot and outside `.git`. The Windows job's steps run in PowerShell rather than Git Bash, so MSYS never rewrites an argument or environment value that looks like a POSIX path, and each input reaches the trusted runner as a single quoted `--name=value` argument, so an empty value cannot shift the arguments after it.
 
 ### Artifact, log, and cache disclosure
@@ -56,11 +58,14 @@ In TestFlight mode the unsigned IPA is encrypted to a separate transport
 recipient whose identity is available only inside `apple-production`. The
 protected job downloads that ciphertext, rejects traversal, symlinks, special
 files, multiple apps, and embedded applications other than `PlugIns` app
-extensions. Each extension's Bundle ID must extend the app's, which also keeps a
+extensions and one `Watch/*.app` (whose own `PlugIns` extensions are also
+accepted). Each embedded bundle's Bundle ID must extend its container's, and a
+watch app must name the app as its `WKCompanionAppBundleIdentifier`, which also keeps a
 project from steering the job into registering or provisioning an arbitrary
-identifier; at most 16 are accepted. It sets a GitHub-run-derived
-`CFBundleVersion` on the app and every extension, signs each extension with its
-own App Store profile and then the app, without executing either,
+identifier; at most 16 extensions per container and one watch app are accepted.
+It sets a GitHub-run-derived `CFBundleVersion` on the app and every embedded
+bundle, signs each extension and the watch app with its own App Store profile,
+inside out, and then the app, without executing any of them,
 validates the signed IPA with App Store Connect, and uploads it directly to Apple
 before deleting it with the ephemeral runner; only an AGE-encrypted diagnostic log is
 uploaded to GitHub.
@@ -104,6 +109,6 @@ Public workflow metadata/inputs can expose source owner/repository names, iOS pa
 
 - Protecting source from GitHub's runner/control plane.
 - Safely building intentionally malicious private projects in a strong sandbox.
-- Automatic provisioning and multi-profile signing for Watch apps, App Clips, XPC services, or ExtensionKit extensions.
+- Automatic provisioning and multi-profile signing for App Clips, XPC services, or ExtensionKit extensions.
 - Hiding Apple credentials from GitHub's protected signing runner/control plane.
 - Guaranteeing GitHub policy approval; see [COMPLIANCE.md](../COMPLIANCE.md).

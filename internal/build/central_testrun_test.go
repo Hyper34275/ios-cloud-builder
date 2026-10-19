@@ -32,14 +32,24 @@ func TestCentralTestDispatchInputs(t *testing.T) {
 		"operation":          "test",
 		"test_script":        "scripts/ios-test.sh",
 	}
-	got := centralTestDispatchInputs(cfg, buildID, want["snapshot_ref"], "scripts/ios-test.sh")
+	got := centralTestDispatchInputs(cfg, buildID, want["snapshot_ref"], "scripts/ios-test.sh", "")
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("centralTestDispatchInputs() = %#v, want %#v", got, want)
 	}
 
 	cfg.IOS.Path = ""
-	if got := centralTestDispatchInputs(cfg, buildID, want["snapshot_ref"], "t.sh")["ios_path"]; got != "." {
+	want["ios_path"] = "."
+	if got := centralTestDispatchInputs(cfg, buildID, want["snapshot_ref"], "t.sh", "")["ios_path"]; got != "." {
 		t.Fatalf("ios_path = %q, want .", got)
+	}
+	// The default image is the workflow's own default, so it is never sent: a
+	// workflow that predates test_image keeps accepting the dispatch.
+	if _, present := centralTestDispatchInputs(cfg, buildID, want["snapshot_ref"], "t.sh", config.TestImageMacOS26)["test_image"]; present {
+		t.Error("the default test image was sent as an input")
+	}
+	want["test_image"] = "xcode-27"
+	if got := centralTestDispatchInputs(cfg, buildID, want["snapshot_ref"], "scripts/ios-test.sh", config.TestImageXcode27); !reflect.DeepEqual(got, want) {
+		t.Errorf("xcode-27 dispatch = %#v, want %#v", got, want)
 	}
 	if build := centralDispatchInputs(cfg, buildID, want["snapshot_ref"], false); build["test_script"] != "" || build["operation"] != "build" {
 		t.Fatalf("build dispatch carries test inputs: %#v", build)
@@ -198,6 +208,32 @@ func TestTestRequiresCentralBackendAndValidScript(t *testing.T) {
 			!strings.Contains(err.Error(), "invalid test script") {
 			t.Errorf("Test(%q) error = %v", script, err)
 		}
+	}
+}
+
+func TestTestRejectsUnknownImages(t *testing.T) {
+	identity, err := age.GenerateX25519Identity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	central := &config.Config{
+		Project:  "App",
+		Backend:  config.BackendCentral,
+		GitHub:   config.GitHubConfig{Owner: "source", Repo: "private"},
+		Builder:  config.BuilderConfig{Owner: "builder", Repo: "public", Workflow: "ios-build.yml"},
+		Security: config.SecurityConfig{Recipient: identity.Recipient().String()},
+	}
+	for _, image := range []string{"macos-26-xlarge", "xcode-27-xlarge", "ubuntu-latest", "self-hosted", "XCODE-27", " xcode-27", "macos-26\nxcode-27", "[macos-26]"} {
+		_, err := NewCoordinatorWithOutput(central, nil, &bytes.Buffer{}).Test(context.Background(), TestOptions{Script: "t.sh", Image: image})
+		if err == nil || !strings.Contains(err.Error(), "invalid test image") {
+			t.Errorf("Test(image %q) error = %v, want invalid test image", image, err)
+		}
+	}
+	_, err = NewCoordinatorWithOutput(central, nil, &bytes.Buffer{}).Test(context.Background(), TestOptions{
+		Platform: PlatformWindows, Script: "t.ps1", Image: config.TestImageXcode27,
+	})
+	if err == nil || !strings.Contains(err.Error(), "only for iOS") {
+		t.Errorf("Test(windows with an image) error = %v", err)
 	}
 }
 

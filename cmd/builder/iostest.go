@@ -24,7 +24,9 @@ var iosTestCmd = &cobra.Command{
 	Use:   "test",
 	Short: "Run the project's test script on the central builder",
 	Long: `Snapshots the working tree and runs the project's test script on a macOS
-runner of the central builder, with Xcode 26 and iOS 26 simulators.
+runner of the central builder, with Xcode 26 and iOS 26 simulators. With
+--image xcode-27 (or ios.testImage in builder.json) it runs on the xcode-27
+runner image instead: macOS 27 with the newest Xcode 27.x and its simulators.
 
 The script (--script, or ios.testScript in builder.json) is a path relative to
 the repository root and runs as "bash <script>" from the repository root. It
@@ -46,6 +48,7 @@ pass is kept, with its encrypted artifact for one day.`,
 
 func init() {
 	iosTestCmd.Flags().String("script", "", "Test script relative to the repository root (default: ios.testScript in builder.json)")
+	iosTestCmd.Flags().String("image", "", "Runner image: "+strings.Join(config.TestImages(), " or ")+" (default: ios.testImage in builder.json, else "+config.TestImageMacOS26+")")
 	iosTestCmd.Flags().Duration("timeout", build.DefaultTestTimeout, "How long to wait for the run, including queueing")
 	iosTestCmd.Flags().StringP("output", "o", "dist", "Output directory for the decrypted log and report")
 	iosTestCmd.Flags().StringP("remote", "r", "origin", "Git remote to push the working-tree snapshot to")
@@ -106,6 +109,13 @@ func runCentralTest(cmd *cobra.Command, platform build.TestPlatform) error {
 		Platform:  platform,
 		KeepRun:   keepRun,
 	}
+	if platform == build.PlatformIOS {
+		flagImage, _ := cmd.Flags().GetString("image")
+		options.Image, err = resolveTestImage(flagImage, cfg.IOS.TestImage)
+		if err != nil {
+			return err
+		}
+	}
 	if platform == build.PlatformWindows {
 		flagArtifact, _ := cmd.Flags().GetString("artifact")
 		options.Artifact, err = resolveArtifactPath(flagArtifact, cmd.Flags().Changed("artifact"), cfg.Windows.Artifact, repoRoot)
@@ -128,6 +138,24 @@ func runCentralTest(cmd *cobra.Command, platform build.TestPlatform) error {
 		return errTestsFailed
 	}
 	return nil
+}
+
+// resolveTestImage picks the runner image of `builder ios test`, --image over
+// ios.testImage, and rejects anything outside the central workflow's two
+// choices before anything is snapshotted or dispatched. Empty means the
+// default image, which the workflow is not even sent.
+func resolveTestImage(flagValue, configValue string) (string, error) {
+	value, source := strings.TrimSpace(flagValue), "--image"
+	if value == "" {
+		value, source = configValue, "ios.testImage in builder.json"
+	}
+	if value == "" {
+		return "", nil
+	}
+	if err := config.ValidateTestImage(value); err != nil {
+		return "", fmt.Errorf("runner image %q from %s %v", value, source, err)
+	}
+	return value, nil
 }
 
 // scriptSource describes where a platform's test script comes from.
