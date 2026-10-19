@@ -623,7 +623,7 @@ func discoverEmbeddedBundles(appPath string) ([]embeddedBundle, error) {
 			return nil
 		case parent == watchRoot:
 			if !strings.HasSuffix(name, ".app") {
-				return fmt.Errorf("Watch may contain only watch application bundles")
+				return fmt.Errorf("the Watch directory may contain only watch application bundles")
 			}
 			if len(watchApps) == maxWatchApps {
 				return fmt.Errorf("application contains more than %d watch application", maxWatchApps)
