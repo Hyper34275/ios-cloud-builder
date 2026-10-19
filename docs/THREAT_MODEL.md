@@ -56,11 +56,14 @@ In TestFlight mode the unsigned IPA is encrypted to a separate transport
 recipient whose identity is available only inside `apple-production`. The
 protected job downloads that ciphertext, rejects traversal, symlinks, special
 files, multiple apps, and embedded applications other than `PlugIns` app
-extensions. Each extension's Bundle ID must extend the app's, which also keeps a
+extensions and one `Watch/*.app` (whose own `PlugIns` extensions are also
+accepted). Each embedded bundle's Bundle ID must extend its container's, and a
+watch app must name the app as its `WKCompanionAppBundleIdentifier`, which also keeps a
 project from steering the job into registering or provisioning an arbitrary
-identifier; at most 16 are accepted. It sets a GitHub-run-derived
-`CFBundleVersion` on the app and every extension, signs each extension with its
-own App Store profile and then the app, without executing either,
+identifier; at most 16 extensions per container and one watch app are accepted.
+It sets a GitHub-run-derived `CFBundleVersion` on the app and every embedded
+bundle, signs each extension and the watch app with its own App Store profile,
+inside out, and then the app, without executing any of them,
 validates the signed IPA with App Store Connect, and uploads it directly to Apple
 before deleting it with the ephemeral runner; only an AGE-encrypted diagnostic log is
 uploaded to GitHub.
@@ -104,6 +107,6 @@ Public workflow metadata/inputs can expose source owner/repository names, iOS pa
 
 - Protecting source from GitHub's runner/control plane.
 - Safely building intentionally malicious private projects in a strong sandbox.
-- Automatic provisioning and multi-profile signing for Watch apps, App Clips, XPC services, or ExtensionKit extensions.
+- Automatic provisioning and multi-profile signing for App Clips, XPC services, or ExtensionKit extensions.
 - Hiding Apple credentials from GitHub's protected signing runner/control plane.
 - Guaranteeing GitHub policy approval; see [COMPLIANCE.md](../COMPLIANCE.md).

@@ -494,7 +494,20 @@ func TestTestFlightBuildNumberValidation(t *testing.T) {
 	}
 }
 
-func TestDiscoverAppExtensionsFindsPlugInsExtensions(t *testing.T) {
+func discoveredNames(t *testing.T, app string) []string {
+	t.Helper()
+	bundles, err := discoverEmbeddedBundles(app)
+	if err != nil {
+		t.Fatal(err)
+	}
+	names := make([]string, 0, len(bundles))
+	for _, bundle := range bundles {
+		names = append(names, filepath.Base(bundle.path))
+	}
+	return names
+}
+
+func TestDiscoverEmbeddedBundlesFindsPlugInsExtensions(t *testing.T) {
 	app := filepath.Join(t.TempDir(), "App.app")
 	for _, relative := range []string{
 		"PlugIns/Widget.appex/Assets", "PlugIns/Share.appex", "Frameworks/Kit.framework",
@@ -503,14 +516,7 @@ func TestDiscoverAppExtensionsFindsPlugInsExtensions(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	extensions, err := discoverAppExtensions(app)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var names []string
-	for _, extension := range extensions {
-		names = append(names, filepath.Base(extension))
-	}
+	names := discoveredNames(t, app)
 	sort.Strings(names)
 	if strings.Join(names, ",") != "Share.appex,Widget.appex" {
 		t.Fatalf("extensions = %#v", names)
@@ -520,76 +526,280 @@ func TestDiscoverAppExtensionsFindsPlugInsExtensions(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(plain, "Frameworks"), 0700); err != nil {
 		t.Fatal(err)
 	}
-	if extensions, err := discoverAppExtensions(plain); err != nil || len(extensions) != 0 {
-		t.Fatalf("plain application = %#v, %v", extensions, err)
+	if bundles, err := discoverEmbeddedBundles(plain); err != nil || len(bundles) != 0 {
+		t.Fatalf("plain application = %#v, %v", bundles, err)
 	}
 }
 
-func TestDiscoverAppExtensionsStillFailsClosedOnEverythingElse(t *testing.T) {
+func TestDiscoverEmbeddedBundlesSignsInsideOut(t *testing.T) {
+	app := filepath.Join(t.TempDir(), "App.app")
 	for _, relative := range []string{
-		"Watch", "AppClips", "XPCServices/Service.xpc", "Nested.App",
-		"Extensions/Kit.appex",                     // ExtensionKit, not PlugIns
-		"Frameworks/Share.appex",                   // an extension outside PlugIns
-		"PlugIns/Widget.appex/PlugIns/Inner.appex", // nested inside an extension
-		"PlugIns/Widget.appex/Watch",               // same, another bundle type
-		"PlugIns/NotAnExtension",                   // PlugIns holds extensions only
-		"Resources/PlugIns",                        // a second PlugIns elsewhere
+		"PlugIns/Widget.appex",
+		"Watch/Watch.app/Frameworks/Kit.framework",
+		"Watch/Watch.app/PlugIns/Complication.appex/Assets",
+		"Watch/Watch.app/PlugIns/Another.appex",
+	} {
+		if err := os.MkdirAll(filepath.Join(app, relative), 0700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	bundles, err := discoverEmbeddedBundles(app)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var order []string
+	for _, bundle := range bundles {
+		order = append(order, filepath.Base(bundle.path))
+	}
+	// The application's extensions, then the watch application's extensions,
+	// then the watch application: every bundle precedes its container.
+	if want := "Widget.appex,Another.appex,Complication.appex,Watch.app"; strings.Join(order, ",") != want {
+		t.Fatalf("order = %v, want %s", order, want)
+	}
+	for _, bundle := range bundles {
+		switch filepath.Base(bundle.path) {
+		case "Watch.app":
+			if bundle.kind != embeddedWatchApp || bundle.parent != app {
+				t.Fatalf("watch application = %#v", bundle)
+			}
+		case "Widget.appex":
+			if bundle.kind != embeddedExtension || bundle.parent != app {
+				t.Fatalf("widget = %#v", bundle)
+			}
+		default:
+			if bundle.kind != embeddedExtension || bundle.parent != filepath.Join(app, "Watch", "Watch.app") {
+				t.Fatalf("watch extension = %#v", bundle)
+			}
+		}
+	}
+}
+
+func TestDiscoverEmbeddedBundlesStillFailsClosedOnEverythingElse(t *testing.T) {
+	for _, relative := range []string{
+		"AppClips", "XPCServices/Service.xpc", "Nested.App",
+		"Extensions/Kit.appex",                        // ExtensionKit, not PlugIns
+		"Frameworks/Share.appex",                      // an extension outside PlugIns
+		"PlugIns/Widget.appex/PlugIns/Inner.appex",    // nested inside an extension
+		"PlugIns/Widget.appex/Watch",                  // same, another bundle type
+		"PlugIns/Widget.appex/Watch/Watch.app",        // a watch application inside an extension
+		"PlugIns/NotAnExtension",                      // PlugIns holds extensions only
+		"Resources/PlugIns",                           // a second PlugIns elsewhere
+		"Resources/Watch",                             // a second Watch elsewhere
+		"watch",                                       // wrong case is not the Watch folder
+		"Watch/Other.appex",                           // Watch holds watch applications only
+		"Watch/NotAnApp",                              // same
+		"Watch/A.app/Watch",                           // a watch application inside a watch application
+		"Watch/A.app/Watch/B.app",                     // same, with a bundle
+		"Watch/A.app/AppClips",                        // App Clip in a watch application
+		"Watch/A.app/XPCServices/S.xpc",               // XPC service in a watch application
+		"Watch/A.app/Extensions/Kit.appex",            // ExtensionKit in a watch application
+		"Watch/A.app/PlugIns/NotAnExtension",          // watch PlugIns holds extensions only
+		"Watch/A.app/PlugIns/W.appex/PlugIns/I.appex", // nested inside a watch extension
+		"Watch/A.app/PlugIns/W.appex/Watch/B.app",     // same, another bundle type
+		"Watch/A.app/Frameworks/F.framework/B.app",    // an application hidden in a framework
+		"Watch/A.app/Frameworks/Share.appex",          // an extension outside PlugIns
 	} {
 		t.Run(relative, func(t *testing.T) {
 			app := filepath.Join(t.TempDir(), "App.app")
 			if err := os.MkdirAll(filepath.Join(app, relative), 0700); err != nil {
 				t.Fatal(err)
 			}
-			if _, err := discoverAppExtensions(app); err == nil {
+			if _, err := discoverEmbeddedBundles(app); err == nil {
 				t.Fatalf("nested bundle %q was accepted", relative)
 			}
 		})
 	}
 }
 
-func TestDiscoverAppExtensionsIsBounded(t *testing.T) {
+func TestDiscoverEmbeddedBundlesIsBounded(t *testing.T) {
 	app := filepath.Join(t.TempDir(), "App.app")
 	for index := 0; index <= maxAppExtensions; index++ {
 		if err := os.MkdirAll(filepath.Join(app, "PlugIns", fmt.Sprintf("E%02d.appex", index)), 0700); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if _, err := discoverAppExtensions(app); err == nil {
+	if _, err := discoverEmbeddedBundles(app); err == nil {
 		t.Fatal("more extensions than the limit were accepted")
+	}
+
+	watch := filepath.Join(t.TempDir(), "App.app")
+	for index := 0; index <= maxAppExtensions; index++ {
+		if err := os.MkdirAll(filepath.Join(watch, "Watch", "W.app", "PlugIns", fmt.Sprintf("E%02d.appex", index)), 0700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := discoverEmbeddedBundles(watch); err == nil {
+		t.Fatal("more watch extensions than the limit were accepted")
+	}
+
+	two := filepath.Join(t.TempDir(), "App.app")
+	for _, name := range []string{"A.app", "B.app"} {
+		if err := os.MkdirAll(filepath.Join(two, "Watch", name), 0700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := discoverEmbeddedBundles(two); err == nil {
+		t.Fatal("two watch applications were accepted")
 	}
 }
 
-func TestReadExtensionBundleIDMustExtendTheApplication(t *testing.T) {
+func writeBundleInfo(t *testing.T, bundlePath string, values map[string]any) {
+	t.Helper()
+	info, err := plist.Marshal(values, plist.XMLFormat)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(bundlePath, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(bundlePath, "Info.plist"), info, 0600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestReadEmbeddedBundleIDMustExtendTheContainer(t *testing.T) {
 	write := func(bundleID string) string {
 		t.Helper()
-		extension := filepath.Join(t.TempDir(), "Widget.appex")
-		info, err := plist.Marshal(map[string]any{"CFBundleIdentifier": bundleID}, plist.XMLFormat)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if err := os.MkdirAll(extension, 0700); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(filepath.Join(extension, "Info.plist"), info, 0600); err != nil {
-			t.Fatal(err)
-		}
-		return extension
+		bundle := filepath.Join(t.TempDir(), "Widget.appex")
+		writeBundleInfo(t, bundle, map[string]any{"CFBundleIdentifier": bundleID})
+		return bundle
 	}
-	for _, accepted := range []string{"com.example.app.widget", "com.example.app.Live-Activity"} {
-		if got, err := readExtensionBundleID(write(accepted), "com.example.app"); err != nil || got != accepted {
-			t.Fatalf("%q = %q, %v", accepted, got, err)
+	for _, kind := range []embeddedKind{embeddedExtension, embeddedWatchApp} {
+		for _, accepted := range []string{"com.example.app.widget", "com.example.app.Live-Activity", "com.example.app.watchkitapp"} {
+			if got, err := readEmbeddedBundleID(write(accepted), "com.example.app", kind); err != nil || got != accepted {
+				t.Fatalf("%q = %q, %v", accepted, got, err)
+			}
+		}
+		for _, rejected := range []string{
+			"com.example.app",       // the container itself
+			"com.example.appwidget", // shares a prefix, is not a child
+			"com.example.other",     // unrelated identifier
+			"com.example.app.",      // empty child
+			"com.example.app..x",    // empty component
+			"com.example.app.x y",   // outside the identifier alphabet
+		} {
+			if _, err := readEmbeddedBundleID(write(rejected), "com.example.app", kind); err == nil {
+				t.Fatalf("%s identifier %q was accepted", kind.label(), rejected)
+			}
 		}
 	}
-	for _, rejected := range []string{
-		"com.example.app",       // the application itself
-		"com.example.appwidget", // shares a prefix, is not a child
-		"com.example.other",     // unrelated identifier
-		"com.example.app.",      // empty child
-		"com.example.app..x",    // empty component
-		"com.example.app.x y",   // outside the identifier alphabet
+}
+
+// writeWatchLayout builds an application with a widget, a watch application
+// and an extension inside the watch application.
+func writeWatchLayout(t *testing.T, watchID, companion, watchExtensionID string) (string, string) {
+	t.Helper()
+	app := filepath.Join(t.TempDir(), "App.app")
+	writeBundleInfo(t, app, map[string]any{"CFBundleIdentifier": "com.example.app", "CFBundleShortVersionString": "1.4.0", "CFBundleVersion": "1"})
+	writeBundleInfo(t, filepath.Join(app, "PlugIns", "Widget.appex"), map[string]any{"CFBundleIdentifier": "com.example.app.widget"})
+	watch := filepath.Join(app, "Watch", "Watch.app")
+	writeBundleInfo(t, watch, map[string]any{
+		"CFBundleIdentifier": watchID, "WKCompanionAppBundleIdentifier": companion,
+		"CFBundleShortVersionString": "0.9", "CFBundleVersion": "1",
+	})
+	if watchExtensionID != "" {
+		writeBundleInfo(t, filepath.Join(watch, "PlugIns", "Complication.appex"), map[string]any{"CFBundleIdentifier": watchExtensionID})
+	}
+	return app, watch
+}
+
+func TestValidateEmbeddedBundlesAcceptsWatchApplication(t *testing.T) {
+	app, _ := writeWatchLayout(t, "com.example.app.watchkitapp", "com.example.app", "com.example.app.watchkitapp.complication")
+	bundles, err := discoverEmbeddedBundles(app)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ids, err := validateEmbeddedBundles(bundles, app, "com.example.app")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(ids, ","); got != "com.example.app.widget,com.example.app.watchkitapp.complication,com.example.app.watchkitapp" {
+		t.Fatalf("identifiers = %s", got)
+	}
+}
+
+func TestValidateEmbeddedBundlesRejectsBadWatchApplication(t *testing.T) {
+	for name, layout := range map[string][3]string{
+		"watch identifier does not extend the application": {"com.other.watchkitapp", "com.example.app", ""},
+		"watch identifier equals the application":          {"com.example.app", "com.example.app", ""},
+		"companion is another application":                 {"com.example.app.watchkitapp", "com.other.app", ""},
+		"companion is missing":                             {"com.example.app.watchkitapp", "", ""},
+		"watch extension does not extend the watch app":    {"com.example.app.watchkitapp", "com.example.app", "com.example.app.complication"},
+		"watch extension reuses the widget identifier":     {"com.example.app.watchkitapp", "com.example.app", "com.example.app.widget"},
 	} {
-		if _, err := readExtensionBundleID(write(rejected), "com.example.app"); err == nil {
-			t.Fatalf("extension identifier %q was accepted", rejected)
+		t.Run(name, func(t *testing.T) {
+			app, _ := writeWatchLayout(t, layout[0], layout[1], layout[2])
+			bundles, err := discoverEmbeddedBundles(app)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := validateEmbeddedBundles(bundles, app, "com.example.app"); err == nil {
+				t.Fatal("invalid watch application was accepted")
+			}
+		})
+	}
+}
+
+func TestValidateEmbeddedBundlesClearMessages(t *testing.T) {
+	app, _ := writeWatchLayout(t, "com.other.watchkitapp", "com.example.app", "")
+	bundles, _ := discoverEmbeddedBundles(app)
+	if _, err := validateEmbeddedBundles(bundles, app, "com.example.app"); err == nil || !strings.Contains(err.Error(), "watch application bundle identifier must extend") {
+		t.Fatalf("error = %v", err)
+	}
+	app, _ = writeWatchLayout(t, "com.example.app.watchkitapp", "com.other.app", "")
+	bundles, _ = discoverEmbeddedBundles(app)
+	if _, err := validateEmbeddedBundles(bundles, app, "com.example.app"); err == nil || !strings.Contains(err.Error(), "WKCompanionAppBundleIdentifier") {
+		t.Fatalf("error = %v", err)
+	}
+}
+
+func TestBundleShortVersionRoundTrip(t *testing.T) {
+	app, watch := writeWatchLayout(t, "com.example.app.watchkitapp", "com.example.app", "")
+	version, err := readBundleShortVersion(filepath.Join(app, "Info.plist"))
+	if err != nil || version != "1.4.0" {
+		t.Fatalf("version = %q, %v", version, err)
+	}
+	infoPath := filepath.Join(watch, "Info.plist")
+	if err := setBundleShortVersion(infoPath, version); err != nil {
+		t.Fatal(err)
+	}
+	if err := setBundleBuildNumber(infoPath, "42.1"); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(infoPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var values map[string]any
+	if _, err := plist.Unmarshal(data, &values); err != nil {
+		t.Fatal(err)
+	}
+	if values["CFBundleShortVersionString"] != "1.4.0" || values["CFBundleVersion"] != "42.1" ||
+		values["WKCompanionAppBundleIdentifier"] != "com.example.app" {
+		t.Fatalf("watch Info.plist = %#v", values)
+	}
+	// An application with no marketing version has nothing to sync.
+	bare := filepath.Join(t.TempDir(), "Bare.app")
+	writeBundleInfo(t, bare, map[string]any{"CFBundleIdentifier": "com.example.bare"})
+	if version, err := readBundleShortVersion(filepath.Join(bare, "Info.plist")); err != nil || version != "" {
+		t.Fatalf("bare version = %q, %v", version, err)
+	}
+}
+
+func TestIsInsideWatchApp(t *testing.T) {
+	app, _ := writeWatchLayout(t, "com.example.app.watchkitapp", "com.example.app", "com.example.app.watchkitapp.complication")
+	bundles, err := discoverEmbeddedBundles(app)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]bool{}
+	for _, bundle := range bundles {
+		got[filepath.Base(bundle.path)] = isInsideWatchApp(bundles, bundle)
+	}
+	want := map[string]bool{"Widget.appex": false, "Complication.appex": true, "Watch.app": true}
+	for name, expected := range want {
+		if got[name] != expected {
+			t.Fatalf("%s inside watch app = %v, want %v", name, got[name], expected)
 		}
 	}
 }
@@ -598,6 +808,7 @@ func TestNestedCodeLeavesExtensionsToTheirOwnSigning(t *testing.T) {
 	app := filepath.Join(t.TempDir(), "App.app")
 	for _, relative := range []string{
 		"Frameworks/Kit.framework/Versions", "PlugIns/Widget.appex/Frameworks/Inner.framework",
+		"Watch/Watch.app/Frameworks/WatchKit2.framework",
 	} {
 		if err := os.MkdirAll(filepath.Join(app, relative), 0700); err != nil {
 			t.Fatal(err)
@@ -607,12 +818,12 @@ func TestNestedCodeLeavesExtensionsToTheirOwnSigning(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	applicationCode, err := nestedCode(app, filepath.Join(app, "PlugIns"))
+	applicationCode, err := nestedCode(app, filepath.Join(app, "PlugIns"), filepath.Join(app, "Watch"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	for _, code := range applicationCode {
-		if strings.Contains(code, "PlugIns") {
+		if strings.Contains(code, "PlugIns") || strings.Contains(code, "Watch") {
 			t.Fatalf("application re-signed extension code %q", code)
 		}
 	}
@@ -620,12 +831,20 @@ func TestNestedCodeLeavesExtensionsToTheirOwnSigning(t *testing.T) {
 		t.Fatalf("application nested code = %#v", applicationCode)
 	}
 
-	extensionCode, err := nestedCode(filepath.Join(app, "PlugIns", "Widget.appex"), "")
+	extensionCode, err := nestedCode(filepath.Join(app, "PlugIns", "Widget.appex"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(extensionCode) != 1 || filepath.Base(extensionCode[0]) != "Inner.framework" {
 		t.Fatalf("extension nested code = %#v", extensionCode)
+	}
+
+	watchCode, err := nestedCode(filepath.Join(app, "Watch", "Watch.app"), filepath.Join(app, "Watch", "Watch.app", "PlugIns"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(watchCode) != 1 || filepath.Base(watchCode[0]) != "WatchKit2.framework" {
+		t.Fatalf("watch nested code = %#v", watchCode)
 	}
 }
 
