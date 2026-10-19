@@ -85,6 +85,9 @@ type TestOptions struct {
 	// relative to the repository root. It is decrypted to OutputDir under its
 	// base name.
 	Artifact string
+	// Image is the runner image of an iOS test run: config.TestImageMacOS26 (the
+	// default, also when empty) or config.TestImageXcode27. Windows runs take none.
+	Image string
 	// KeepRun keeps the public run and its encrypted artifacts even when the
 	// tests pass. A run whose tests did not pass is always kept.
 	KeepRun bool
@@ -190,11 +193,14 @@ func (c *Coordinator) Test(parent context.Context, opts TestOptions) (*TestResul
 		return result, fmt.Errorf("verify private source remote: %w", err)
 	}
 
-	inputs := centralTestDispatchInputs(c.config, buildID, snapshot.Ref(buildID), opts.Script)
+	inputs := centralTestDispatchInputs(c.config, buildID, snapshot.Ref(buildID), opts.Script, opts.Image)
 	if opts.Platform == PlatformWindows {
 		inputs = centralWindowsTestDispatchInputs(c.config, buildID, snapshot.Ref(buildID), opts.Script, opts.Artifact)
 	}
 	running := fmt.Sprintf("Running tests securely on the central %s runner...", opts.Platform.title())
+	if opts.Image == config.TestImageXcode27 {
+		running = "Running tests securely on the central iOS runner (xcode-27 image)..."
+	}
 	run, err := c.awaitCentralRun(ctx, opts.Remote, buildID, inputs, opts.Timeout, PhaseTesting, running)
 	if run != nil {
 		result.WorkflowURL = run.HTMLURL
@@ -224,6 +230,9 @@ func validateTestOptions(opts *TestOptions) error {
 				return fmt.Errorf("invalid artifact: %w", err)
 			}
 		}
+		if opts.Image != "" {
+			return errors.New("a runner image can be chosen only for iOS test runs")
+		}
 		return nil
 	}
 	if err := config.ValidateTestScriptPath(opts.Script); err != nil {
@@ -231,6 +240,11 @@ func validateTestOptions(opts *TestOptions) error {
 	}
 	if opts.Artifact != "" {
 		return errors.New("an artifact is supported only for Windows test runs")
+	}
+	if opts.Image != "" {
+		if err := config.ValidateTestImage(opts.Image); err != nil {
+			return fmt.Errorf("invalid test image %q: %w", opts.Image, err)
+		}
 	}
 	return nil
 }
@@ -553,7 +567,12 @@ func runDeleteWarning(owner, repo string, run *github.WorkflowRun, err error) st
 // centralTestDispatchInputs sends only what the iOS test job reads. Scheme,
 // configuration, and framework keep their workflow defaults, which exposes
 // less project metadata in the public run.
-func centralTestDispatchInputs(cfg *config.Config, buildID, ref, script string) map[string]string {
+//
+// image selects the test job's runner. The default image is not sent at all,
+// so a workflow that predates the test_image input still accepts the dispatch;
+// only an explicit config.TestImageXcode27 adds it. Callers validate image
+// first (validateTestOptions), and the workflow validates it again.
+func centralTestDispatchInputs(cfg *config.Config, buildID, ref, script, image string) map[string]string {
 	inputs := map[string]string{
 		"build_id":           buildID,
 		"source_owner":       cfg.GitHub.Owner,
@@ -566,6 +585,9 @@ func centralTestDispatchInputs(cfg *config.Config, buildID, ref, script string) 
 	}
 	if cfg.IOS.Path != "" {
 		inputs["ios_path"] = cfg.IOS.Path
+	}
+	if image == config.TestImageXcode27 {
+		inputs["test_image"] = image
 	}
 	return inputs
 }

@@ -294,6 +294,29 @@ func TestConfig_TestScript(t *testing.T) {
 	}
 }
 
+func TestConfig_TestImage(t *testing.T) {
+	base := Config{Project: "App", GitHub: GitHubConfig{Owner: "owner", Repo: "repo"}}
+	for _, image := range []string{"", "macos-26", "xcode-27"} {
+		cfg := base
+		cfg.IOS.TestImage = image
+		if err := cfg.Validate(); err != nil {
+			t.Errorf("ios.testImage %q rejected: %v", image, err)
+		}
+	}
+	for _, image := range []string{"xcode-27-xlarge", "macos-26-xlarge", "macos-15", "ubuntu-latest", "self-hosted", "Xcode-27", " xcode-27", "xcode-27\n"} {
+		cfg := base
+		cfg.IOS.TestImage = image
+		err := cfg.Validate()
+		validationErr, ok := err.(*ValidationError)
+		if !ok || validationErr.Field != "ios.testImage" {
+			t.Errorf("ios.testImage %q: Validate() = %v, want an ios.testImage error", image, err)
+		}
+	}
+	if got := TestImages(); len(got) != 2 || got[0] != TestImageMacOS26 || got[1] != TestImageXcode27 {
+		t.Errorf("TestImages() = %v", got)
+	}
+}
+
 func TestManager_TestScriptRoundTrip(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "builder.json")
 	if err := os.WriteFile(path, []byte(`{

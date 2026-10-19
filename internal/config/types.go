@@ -27,6 +27,31 @@ const MaxTestScriptPathLength = 256
 // accepts.
 const MaxArtifactPathLength = MaxTestScriptPathLength
 
+// Runner images `builder ios test` can run on. The central workflow's
+// test_image input is a choice of exactly these two values and the job's
+// runs-on is derived from it, so a value outside this list can never become a
+// runner label.
+const (
+	// TestImageMacOS26 is the default: the macos-26 image with Xcode 26.3.
+	TestImageMacOS26 = "macos-26"
+	// TestImageXcode27 is the xcode-27 image: macOS 27 with the newest Xcode 27.x.
+	TestImageXcode27 = "xcode-27"
+)
+
+// TestImages lists every accepted test image, the default first.
+func TestImages() []string { return []string{TestImageMacOS26, TestImageXcode27} }
+
+// ValidateTestImage accepts exactly the runner images in TestImages. The empty
+// string means the default and is accepted by callers that allow it.
+func ValidateTestImage(value string) error {
+	for _, image := range TestImages() {
+		if value == image {
+			return nil
+		}
+	}
+	return fmt.Errorf("must be one of %s", strings.Join(TestImages(), ", "))
+}
+
 // Backend identifies where a build workflow is executed.
 type Backend string
 
@@ -112,6 +137,9 @@ type IOSConfig struct {
 	// TestScript is the script `builder ios test` runs on the central builder,
 	// relative to the repository root (e.g. "scripts/ios-test.sh").
 	TestScript string `json:"testScript,omitempty"`
+	// TestImage is the runner image `builder ios test` uses: macos-26 (the
+	// default when empty) or xcode-27. `--image` overrides it.
+	TestImage string `json:"testImage,omitempty"`
 }
 
 // MobAIConfig holds MobAI settings for local development
@@ -217,6 +245,11 @@ func (c *Config) Validate() error {
 	if c.IOS.TestScript != "" {
 		if err := ValidateTestScriptPath(c.IOS.TestScript); err != nil {
 			return &ValidationError{Field: "ios.testScript", Message: err.Error()}
+		}
+	}
+	if c.IOS.TestImage != "" {
+		if err := ValidateTestImage(c.IOS.TestImage); err != nil {
+			return &ValidationError{Field: "ios.testImage", Message: err.Error()}
 		}
 	}
 	if c.Windows.TestScript != "" {

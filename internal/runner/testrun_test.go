@@ -134,6 +134,58 @@ func TestInputsValidateTestOperation(t *testing.T) {
 	}
 }
 
+func TestInputsValidateTestImage(t *testing.T) {
+	in := validInputs(t)
+	in.Operation = "test"
+	in.TestScript = "scripts/test.sh"
+	for _, image := range []string{"", "macos-26", "xcode-27"} {
+		in.TestImage = image
+		if err := in.Validate(); err != nil {
+			t.Errorf("test_image %q rejected for operation test: %v", image, err)
+		}
+	}
+	for _, image := range []string{"xcode-27-xlarge", "macos-26-xlarge", "macos-15", "ubuntu-latest", "self-hosted", "XCODE-27", " xcode-27", "xcode-27\n", "${{ secrets.X }}"} {
+		in.TestImage = image
+		if err := in.Validate(); err == nil {
+			t.Errorf("test_image %q accepted", image)
+		}
+	}
+	// xcode-27 selects a runner only the test job uses; any other operation
+	// must stay on the default.
+	for _, operation := range []string{"build", "testflight", "windows-test"} {
+		other := validInputs(t)
+		other.Operation = operation
+		if operation == "windows-test" {
+			other.TestScript = "scripts/test.ps1"
+		}
+		other.TestImage = "macos-26"
+		if err := other.Validate(); err != nil {
+			t.Errorf("operation %s with the default image rejected: %v", operation, err)
+		}
+		other.TestImage = "xcode-27"
+		if err := other.Validate(); err == nil {
+			t.Errorf("operation %s accepted test_image xcode-27", operation)
+		}
+	}
+}
+
+func TestTestImageValidationMatchesConfig(t *testing.T) {
+	for _, image := range []string{"macos-26", "xcode-27", "xcode-27-xlarge", "macos-15", "", "x"} {
+		in := validInputs(t)
+		in.Operation = "test"
+		in.TestScript = "scripts/test.sh"
+		in.TestImage = image
+		runnerErr := in.Validate()
+		configErr := config.ValidateTestImage(image)
+		if image == "" {
+			configErr = nil // the empty image is the default on both sides
+		}
+		if (runnerErr == nil) != (configErr == nil) {
+			t.Errorf("%q: runner error %v, config error %v; the CLI and workflow must agree", image, runnerErr, configErr)
+		}
+	}
+}
+
 func TestTestEnvironmentScrubsPublishingAndCredentials(t *testing.T) {
 	base := []string{
 		"PATH=/usr/bin:/bin",

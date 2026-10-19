@@ -351,6 +351,12 @@ func TestValidateInputsAcceptsTheWindowsJobArguments(t *testing.T) {
 		{"hostile artifact", arguments("windows-test", "scripts/windows-test.ps1", "../PRIVATE-PATH.exe"), 1},
 		{"artifact on a build", arguments("build", "", "dist/EntrixSetup.exe"), 1},
 		{"artifact on an iOS test", arguments("test", "scripts/test.sh", "dist/EntrixSetup.exe"), 1},
+		{"iOS test on the default image", append(arguments("test", "scripts/test.sh", ""), "--test-image=macos-26"), 0},
+		{"iOS test on xcode-27", append(arguments("test", "scripts/test.sh", ""), "--test-image=xcode-27"), 0},
+		{"iOS test on a paid xlarge image", append(arguments("test", "scripts/test.sh", ""), "--test-image=xcode-27-xlarge"), 1},
+		{"iOS test on a free-form label", append(arguments("test", "scripts/test.sh", ""), "--test-image=PRIVATE-PATH-runner"), 1},
+		{"xcode-27 on a build", append(arguments("build", "", ""), "--test-image=xcode-27"), 1},
+		{"xcode-27 on a windows test", append(arguments("windows-test", "scripts/windows-test.ps1", ""), "--test-image=xcode-27"), 1},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			cmd := exec.Command(os.Args[0], test.args...)

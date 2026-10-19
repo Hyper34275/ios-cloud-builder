@@ -50,7 +50,7 @@ Local workstation (Linux/WSL/macOS; Windows through PowerShell/WSL):
 - A Git remote using an explicit `github.com` HTTPS or SSH URL
 - Builder CLI
 
-Builds use the stable `macos-15` runner image and test runs use `macos-26`; both select Xcode 26.3. Windows test runs use `windows-2025`. No local Mac, Xcode, certificate, or provisioning profile is required for an unsigned central build. TestFlight deployment requires an Apple Distribution certificate, one or more App Store distribution provisioning profiles, and an App Store Connect API key.
+Builds use the stable `macos-15` runner image and test runs use `macos-26` by default; both select Xcode 26.3. A test run can opt in to the `xcode-27` image with `--image xcode-27`. Windows test runs use `windows-2025`. No local Mac, Xcode, certificate, or provisioning profile is required for an unsigned central build. TestFlight deployment requires an Apple Distribution certificate, one or more App Store distribution provisioning profiles, and an App Store Connect API key.
 
 ## Install the CLI
 
@@ -266,11 +266,12 @@ Store Connect before uploading it.
 
 ## Running tests
 
-`builder ios test` runs the private project's own test suite on the public builder's `macos-26` runner (Xcode 26.3 and its iOS 26.2 simulators), with the same privacy model as a build:
+`builder ios test` runs the private project's own test suite on the public builder's `macos-26` runner (Xcode 26.3 and its iOS 26.2 simulators; `--image xcode-27` selects the Xcode 27 image, see [Runner image](#runner-image)), with the same privacy model as a build:
 
 ```bash
 builder ios test                                   # the script from ios.testScript
 builder ios test --script scripts/ios-test.sh --timeout 2h -o dist
+builder ios test --image xcode-27                  # macOS 27 and the newest Xcode 27.x
 ```
 
 Set the default script once in `builder.json`; `--script` overrides it:
@@ -278,6 +279,16 @@ Set the default script once in `builder.json`; `--script` overrides it:
 ```json
 "ios": { "path": "ios", "testScript": "scripts/ios-test.sh" }
 ```
+
+### Runner image
+
+By default a test run uses the `macos-26` image with Xcode 26.3. `--image xcode-27` (or `"testImage": "xcode-27"` under `ios` in `builder.json`; the flag wins) runs that one run on GitHub's `xcode-27` image instead: macOS 27 on arm64 with Xcode 27.x and its simulators, including the iPhone Duo simulator that ships with Xcode 27.1. The workflow selects the newest `/Applications/Xcode_27.<minor>.app` on the image and exports it as `DEVELOPER_DIR`, so a script should not assume a particular Xcode 27 minor version.
+
+```bash
+builder ios test --image xcode-27
+```
+
+The choice is a strict allowlist, `macos-26` or `xcode-27`, checked by the CLI, by the workflow's `test_image` choice input, and again by the trusted runner before any credential exists; the job's `runs-on` is one of those two literals, never an input's value. The paid `xcode-27-xlarge` and every other runner label are rejected. The default image is not sent at all, so the CLI keeps working against a builder workflow that predates the input; `--image xcode-27` needs a workflow that has it. Build and TestFlight jobs always stay on `macos-15`, and `builder windows test` has no image choice.
 
 The script is a file in the repository, named relative to the repository root with forward slashes, using only letters, digits, `.`, `_`, `+`, `-` and `/`, with no `..`, no `.git`, and no segment starting with `-`. Before snapshotting, the CLI checks that the file exists, stays inside the repository, and is not excluded by `.gitignore`. It then snapshots and dispatches like `ios build` (with `operation: test` and `test_script`), shows progress, downloads and decrypts the results, prints the report, and writes:
 

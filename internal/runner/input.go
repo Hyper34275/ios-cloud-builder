@@ -42,6 +42,14 @@ const MaxTestScriptPathLength = 256
 // MaxArtifactPathLength bounds the artifact_path input.
 const MaxArtifactPathLength = MaxTestScriptPathLength
 
+// Runner images accepted for test_image. The workflow derives the test job's
+// runs-on from this choice, so these are the only runner labels a dispatch can
+// select. The two lists must stay in step with internal/config.
+const (
+	TestImageMacOS26 = "macos-26"
+	TestImageXcode27 = "xcode-27"
+)
+
 // Operations accepted by the central workflow.
 const (
 	OperationBuild       = "build"
@@ -64,6 +72,7 @@ type Inputs struct {
 	Operation         string
 	TestScript        string
 	ArtifactPath      string
+	TestImage         string
 }
 
 // Validate rejects values that could widen repository access, escape the
@@ -118,6 +127,15 @@ func (in *Inputs) Validate() error {
 		}
 	default:
 		return fmt.Errorf("invalid operation")
+	}
+	switch in.TestImage {
+	case "", TestImageMacOS26:
+	case TestImageXcode27:
+		if in.Operation != OperationTest {
+			return fmt.Errorf("test_image %s is accepted only for operation test", TestImageXcode27)
+		}
+	default:
+		return fmt.Errorf("invalid test_image")
 	}
 	if in.ArtifactPath != "" && in.Operation != OperationWindowsTest {
 		return fmt.Errorf("artifact_path is accepted only for operation windows-test")
