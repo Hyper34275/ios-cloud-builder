@@ -84,6 +84,14 @@ on:
         options:
           - macos-26
           - xcode-27
+      build_xcode:
+        description: Xcode for operations build and testflight; 27.1 runs the build on the xcode-27 image with the Xcode 27.1 release candidate
+        required: false
+        default: '26.3'
+        type: choice
+        options:
+          - '26.3'
+          - '27.1'
 
 permissions:
   contents: read
@@ -91,12 +99,10 @@ permissions:
 jobs:
   build:
     if: inputs.operation == 'build' || inputs.operation == 'testflight'
-    runs-on: macos-15
+    runs-on: ${{ inputs.build_xcode == '27.1' && 'xcode-27' || 'macos-15' }}
     timeout-minutes: 45
     outputs:
       build_number: ${{ steps.build-number.outputs.build_number }}
-    env:
-      DEVELOPER_DIR: /Applications/Xcode_26.3.app/Contents/Developer
 
     steps:
       - name: Checkout trusted public builder
@@ -132,6 +138,7 @@ jobs:
           TEST_SCRIPT: ${{ inputs.test_script }}
           ARTIFACT_PATH: ${{ inputs.artifact_path }}
           TEST_IMAGE: ${{ inputs.test_image }}
+          BUILD_XCODE: ${{ inputs.build_xcode }}
         run: |
           "$RUNNER_TEMP/builder-runner" validate-inputs \
             --build-id "$BUILD_ID" \
@@ -146,7 +153,8 @@ jobs:
             --operation "$OPERATION" \
             --test-script "$TEST_SCRIPT" \
             --artifact-path "$ARTIFACT_PATH" \
-            --test-image "$TEST_IMAGE"
+            --test-image "$TEST_IMAGE" \
+            --build-xcode "$BUILD_XCODE"
 
       - name: Create repository-scoped GitHub App token
         id: source-token
@@ -199,6 +207,54 @@ jobs:
       - name: Verify checkout credential cleanup
         run: |
           "$RUNNER_TEMP/builder-runner" verify-checkout --source "$GITHUB_WORKSPACE/source"
+
+      - name: Select Xcode for the build
+        env:
+          BUILD_XCODE: ${{ inputs.build_xcode }}
+        run: |
+          case "$BUILD_XCODE" in
+            27.1)
+              # Only an Xcode 27.1 that is not a beta: App Store Connect rejects
+              # builds made with a beta Xcode. The release candidate is named on
+              # the image; any other Xcode_27.1*.app must report version 27.1,
+              # must not be (a link to) a beta, and must not carry the
+              # lowercase pre-release suffix of a beta build number.
+              xcode=/Applications/Xcode_27.1_Release_Candidate.app
+              if [ ! -d "$xcode/Contents/Developer" ]; then
+                xcode=
+                for app in /Applications/Xcode_27.1*.app; do
+                  [ -d "$app/Contents/Developer" ] || continue
+                  real=$(cd -P "$app" && pwd -P) || continue
+                  case "${app##*/} ${real##*/}" in
+                    *[Bb][Ee][Tt][Aa]*) continue ;;
+                  esac
+                  info=$(DEVELOPER_DIR="$app/Contents/Developer" "$app/Contents/Developer/usr/bin/xcodebuild" -version 2>/dev/null) || continue
+                  version=$(printf '%s\n' "$info" | sed -n 's/^Xcode //p')
+                  build=$(printf '%s\n' "$info" | sed -n 's/^Build version //p')
+                  [ "$version" = "27.1" ] || continue
+                  case "$build" in
+                    *[a-z]) continue ;;
+                  esac
+                  xcode="$app"
+                  break
+                done
+              fi
+              if [ -z "$xcode" ]; then
+                echo "Xcode 27.1 is not available on this image as a release candidate or release; only a beta (or nothing) was found."
+                exit 1
+              fi
+              ;;
+            *)
+              xcode=/Applications/Xcode_26.3.app
+              ;;
+          esac
+          if [ ! -d "$xcode/Contents/Developer" ]; then
+            echo "No suitable Xcode found for build_xcode $BUILD_XCODE."
+            exit 1
+          fi
+          echo "Using ${xcode##*/}"
+          DEVELOPER_DIR="$xcode/Contents/Developer" "$xcode/Contents/Developer/usr/bin/xcodebuild" -version
+          echo "DEVELOPER_DIR=$xcode/Contents/Developer" >> "$GITHUB_ENV"
 
       - name: Detect supported iOS framework
         id: detect
@@ -411,6 +467,7 @@ jobs:
           TEST_SCRIPT: ${{ inputs.test_script }}
           ARTIFACT_PATH: ${{ inputs.artifact_path }}
           TEST_IMAGE: ${{ inputs.test_image }}
+          BUILD_XCODE: ${{ inputs.build_xcode }}
         run: |
           "$RUNNER_TEMP/builder-runner" validate-inputs \
             --build-id "$BUILD_ID" \
@@ -425,7 +482,8 @@ jobs:
             --operation "$OPERATION" \
             --test-script "$TEST_SCRIPT" \
             --artifact-path "$ARTIFACT_PATH" \
-            --test-image "$TEST_IMAGE"
+            --test-image "$TEST_IMAGE" \
+            --build-xcode "$BUILD_XCODE"
 
       - name: Create repository-scoped GitHub App token
         id: source-token
@@ -591,6 +649,7 @@ jobs:
           TEST_SCRIPT: ${{ inputs.test_script }}
           ARTIFACT_PATH: ${{ inputs.artifact_path }}
           TEST_IMAGE: ${{ inputs.test_image }}
+          BUILD_XCODE: ${{ inputs.build_xcode }}
         run: |
           & "$env:RUNNER_TEMP\builder-runner.exe" validate-inputs `
             "--build-id=$env:BUILD_ID" `
@@ -605,7 +664,8 @@ jobs:
             "--operation=$env:OPERATION" `
             "--test-script=$env:TEST_SCRIPT" `
             "--artifact-path=$env:ARTIFACT_PATH" `
-            "--test-image=$env:TEST_IMAGE"
+            "--test-image=$env:TEST_IMAGE" `
+            "--build-xcode=$env:BUILD_XCODE"
           exit $LASTEXITCODE
 
       - name: Create repository-scoped GitHub App token

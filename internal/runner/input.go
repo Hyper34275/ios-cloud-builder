@@ -50,6 +50,15 @@ const (
 	TestImageXcode27 = "xcode-27"
 )
 
+// Xcode versions accepted for build_xcode, the toolchain of operations build and
+// testflight. The workflow derives the build job's runs-on from this choice, so
+// these are the only build runner labels a dispatch can select. Must stay in
+// step with internal/config.
+const (
+	BuildXcode263 = "26.3"
+	BuildXcode271 = "27.1"
+)
+
 // Operations accepted by the central workflow.
 const (
 	OperationBuild       = "build"
@@ -73,6 +82,7 @@ type Inputs struct {
 	TestScript        string
 	ArtifactPath      string
 	TestImage         string
+	BuildXcode        string
 }
 
 // Validate rejects values that could widen repository access, escape the
@@ -136,6 +146,15 @@ func (in *Inputs) Validate() error {
 		}
 	default:
 		return fmt.Errorf("invalid test_image")
+	}
+	switch in.BuildXcode {
+	case "", BuildXcode263:
+	case BuildXcode271:
+		if in.Operation != OperationBuild && in.Operation != OperationTestFlight {
+			return fmt.Errorf("build_xcode %s is accepted only for operations build and testflight", BuildXcode271)
+		}
+	default:
+		return fmt.Errorf("invalid build_xcode")
 	}
 	if in.ArtifactPath != "" && in.Operation != OperationWindowsTest {
 		return fmt.Errorf("artifact_path is accepted only for operation windows-test")

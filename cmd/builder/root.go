@@ -563,7 +563,12 @@ var iosDeployCmd = &cobra.Command{
 	Short: "Build, sign, and upload to TestFlight",
 	Long: `Builds the private working-tree snapshot through the central builder, then
 signs the unsigned application in the protected apple-production Environment and
-uploads it directly to App Store Connect. No signed IPA is stored by GitHub.`,
+uploads it directly to App Store Connect. No signed IPA is stored by GitHub.
+
+With --xcode 27.1 (or ios.buildXcode in builder.json) the build step runs on the
+xcode-27 runner image with the Xcode 27.1 release candidate, so the app is built
+with the iOS 27.1 SDK; signing and the upload still run on the macos-15 image.
+The app's minimum iOS version is whatever the project says.`,
 	RunE: runIOSDeploy,
 }
 
@@ -645,10 +650,12 @@ func init() {
 	iosBuildCmd.Flags().Bool("unsigned", false, "Build unsigned IPA (skip code signing even if configured)")
 	iosBuildCmd.Flags().Bool("testflight", false, "Sign and upload through the protected central Environment")
 	iosBuildCmd.Flags().StringP("remote", "r", "origin", "Git remote to push the working-tree snapshot to")
+	iosBuildCmd.Flags().String("xcode", "", xcodeFlagUsage)
 	iosCmd.AddCommand(iosBuildCmd)
 	iosDeployCmd.Flags().StringP("output", "o", "dist", "Output directory for decrypted diagnostic logs")
 	iosDeployCmd.Flags().Duration("timeout", 45*time.Minute, "Deployment timeout, including Environment approval")
 	iosDeployCmd.Flags().StringP("remote", "r", "origin", "Git remote to push the working-tree snapshot to")
+	iosDeployCmd.Flags().String("xcode", "", xcodeFlagUsage)
 	iosCmd.AddCommand(iosDeployCmd)
 
 	// iOS share command flags
@@ -679,6 +686,11 @@ func runIOSBuild(cmd *cobra.Command, args []string) error {
 	if testFlight && !cfg.IsCentral() {
 		return fmt.Errorf("--testflight requires backend=central; repository builds retain their existing signing behavior")
 	}
+	flagXcode, _ := cmd.Flags().GetString("xcode")
+	xcode, err := resolveBuildXcode(flagXcode, cfg.IOS.BuildXcode, cfg.IsCentral())
+	if err != nil {
+		return err
+	}
 
 	ctx := cmd.Context()
 	if ctx == nil {
@@ -693,6 +705,7 @@ func runIOSBuild(cmd *cobra.Command, args []string) error {
 		Unsigned:   unsigned,
 		TestFlight: testFlight,
 		Remote:     remote,
+		Xcode:      xcode,
 	})
 }
 
@@ -710,6 +723,11 @@ func runIOSDeploy(cmd *cobra.Command, _ []string) error {
 	outputDir, _ := cmd.Flags().GetString("output")
 	timeout, _ := cmd.Flags().GetDuration("timeout")
 	remote, _ := cmd.Flags().GetString("remote")
+	flagXcode, _ := cmd.Flags().GetString("xcode")
+	xcode, err := resolveBuildXcode(flagXcode, cfg.IOS.BuildXcode, true)
+	if err != nil {
+		return err
+	}
 	ctx := cmd.Context()
 	if ctx == nil {
 		ctx = context.Background()
@@ -721,6 +739,7 @@ func runIOSDeploy(cmd *cobra.Command, _ []string) error {
 		Timeout:    timeout,
 		TestFlight: true,
 		Remote:     remote,
+		Xcode:      xcode,
 	})
 }
 
@@ -790,4 +809,31 @@ func runBuild(ctx context.Context, cfg *config.Config, opts build.BuildOptions) 
 	fmt.Printf("Workflow: %s\n", result.WorkflowURL)
 
 	return nil
+}
+
+// xcodeFlagUsage is the help text of --xcode on `builder ios build` and
+// `builder ios deploy`.
+var xcodeFlagUsage = "Xcode for the build: " + strings.Join(config.BuildXcodes(), " or ") +
+	" (default: ios.buildXcode in builder.json, else " + config.BuildXcode263 + "); 27.1 builds on the xcode-27 image with the Xcode 27.1 release candidate"
+
+// resolveBuildXcode picks the Xcode of `builder ios build` and `builder ios
+// deploy`, --xcode over ios.buildXcode, and rejects anything outside the central
+// workflow's two choices before anything is snapshotted or dispatched. Empty
+// means the default, which the workflow is not even sent. Only the central
+// backend can build with a non-default Xcode.
+func resolveBuildXcode(flagValue, configValue string, central bool) (string, error) {
+	value, source := strings.TrimSpace(flagValue), "--xcode"
+	if value == "" {
+		value, source = configValue, "ios.buildXcode in builder.json"
+	}
+	if value == "" {
+		return "", nil
+	}
+	if err := config.ValidateBuildXcode(value); err != nil {
+		return "", fmt.Errorf("build Xcode %q from %s %v", value, source, err)
+	}
+	if value != config.BuildXcode263 && !central {
+		return "", fmt.Errorf("build Xcode %s from %s requires backend=central", value, source)
+	}
+	return value, nil
 }

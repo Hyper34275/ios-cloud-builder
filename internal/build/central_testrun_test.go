@@ -51,7 +51,7 @@ func TestCentralTestDispatchInputs(t *testing.T) {
 	if got := centralTestDispatchInputs(cfg, buildID, want["snapshot_ref"], "scripts/ios-test.sh", config.TestImageXcode27); !reflect.DeepEqual(got, want) {
 		t.Errorf("xcode-27 dispatch = %#v, want %#v", got, want)
 	}
-	if build := centralDispatchInputs(cfg, buildID, want["snapshot_ref"], false); build["test_script"] != "" || build["operation"] != "build" {
+	if build := centralDispatchInputs(cfg, buildID, want["snapshot_ref"], false, ""); build["test_script"] != "" || build["operation"] != "build" {
 		t.Fatalf("build dispatch carries test inputs: %#v", build)
 	}
 }

@@ -98,6 +98,10 @@ type BuildOptions struct {
 	Unsigned   bool   // Skip code signing even if configured
 	TestFlight bool   // Sign and upload through the protected central environment
 	Remote     string // Git remote to push the working-tree snapshot to
+	// Xcode is the toolchain of a central build: config.BuildXcode263 (the
+	// default, also when empty) or config.BuildXcode271, which runs the build on
+	// the xcode-27 image. The repository backend takes none.
+	Xcode string
 }
 
 // BuildResult contains the result of a build
@@ -121,6 +125,10 @@ func (c *Coordinator) Build(ctx context.Context, opts BuildOptions) (*BuildResul
 // signing/build inputs remain unchanged.
 func (c *Coordinator) buildRepository(ctx context.Context, opts BuildOptions) (*BuildResult, error) {
 	startTime := time.Now()
+
+	if opts.Xcode != "" && opts.Xcode != config.BuildXcode263 {
+		return nil, fmt.Errorf("a build Xcode can be chosen only with the central backend")
+	}
 
 	// Set default timeout
 	if opts.Timeout == 0 {

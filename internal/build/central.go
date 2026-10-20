@@ -70,6 +70,9 @@ func (c *Coordinator) buildCentral(parent context.Context, opts BuildOptions) (*
 	if err := c.config.Validate(); err != nil {
 		return result, err
 	}
+	if err := validateBuildXcode(opts.Xcode); err != nil {
+		return result, err
+	}
 	identity, err := centralIdentity(c.config)
 	if err != nil {
 		return result, err
@@ -79,8 +82,12 @@ func (c *Coordinator) buildCentral(parent context.Context, opts BuildOptions) (*
 	}
 
 	owner, repo := c.config.Builder.Owner, c.config.Builder.Repo
-	inputs := centralDispatchInputs(c.config, buildID, snapshot.Ref(buildID), opts.TestFlight)
-	run, err := c.awaitCentralRun(ctx, opts.Remote, buildID, inputs, opts.Timeout, PhaseBuilding, "Building securely on the central runner...")
+	inputs := centralDispatchInputs(c.config, buildID, snapshot.Ref(buildID), opts.TestFlight, opts.Xcode)
+	running := "Building securely on the central runner..."
+	if opts.Xcode == config.BuildXcode271 {
+		running = "Building securely on the central runner (Xcode 27.1, xcode-27 image)..."
+	}
+	run, err := c.awaitCentralRun(ctx, opts.Remote, buildID, inputs, opts.Timeout, PhaseBuilding, running)
 	if run != nil {
 		result.WorkflowURL = run.HTMLURL
 	}
@@ -346,7 +353,24 @@ func centralIdentity(cfg *config.Config) (*age.X25519Identity, error) {
 	return identity, nil
 }
 
-func centralDispatchInputs(cfg *config.Config, buildID, ref string, testFlight bool) map[string]string {
+// validateBuildXcode rejects any build Xcode outside config.BuildXcodes before
+// anything is snapshotted or dispatched. Empty means the default.
+func validateBuildXcode(xcode string) error {
+	if xcode == "" {
+		return nil
+	}
+	if err := config.ValidateBuildXcode(xcode); err != nil {
+		return fmt.Errorf("invalid build Xcode %q: %w", xcode, err)
+	}
+	return nil
+}
+
+// centralDispatchInputs builds the dispatch of a central build or TestFlight
+// deployment. xcode selects the build job's toolchain: the default (26.3) is not
+// sent at all, so a workflow that predates the build_xcode input still accepts
+// the dispatch; only an explicit config.BuildXcode271 adds it. Callers validate
+// xcode first (validateBuildXcode), and the workflow validates it again.
+func centralDispatchInputs(cfg *config.Config, buildID, ref string, testFlight bool, xcode string) map[string]string {
 	inputs := map[string]string{
 		"build_id":           buildID,
 		"source_owner":       cfg.GitHub.Owner,
@@ -368,6 +392,9 @@ func centralDispatchInputs(cfg *config.Config, buildID, ref string, testFlight b
 		inputs["configuration"] = "Release"
 	} else if cfg.IOS.Configuration != "" {
 		inputs["configuration"] = cfg.IOS.Configuration
+	}
+	if xcode == config.BuildXcode271 {
+		inputs["build_xcode"] = xcode
 	}
 	return inputs
 }

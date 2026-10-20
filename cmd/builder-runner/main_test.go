@@ -357,6 +357,14 @@ func TestValidateInputsAcceptsTheWindowsJobArguments(t *testing.T) {
 		{"iOS test on a free-form label", append(arguments("test", "scripts/test.sh", ""), "--test-image=PRIVATE-PATH-runner"), 1},
 		{"xcode-27 on a build", append(arguments("build", "", ""), "--test-image=xcode-27"), 1},
 		{"xcode-27 on a windows test", append(arguments("windows-test", "scripts/windows-test.ps1", ""), "--test-image=xcode-27"), 1},
+		{"build on the default Xcode", append(arguments("build", "", ""), "--build-xcode=26.3"), 0},
+		{"build on Xcode 27.1", append(arguments("build", "", ""), "--build-xcode=27.1"), 0},
+		{"testflight on Xcode 27.1", append(arguments("testflight", "", ""), "--build-xcode=27.1"), 0},
+		{"build on an unknown Xcode", append(arguments("build", "", ""), "--build-xcode=27.2"), 1},
+		{"build on a free-form Xcode", append(arguments("build", "", ""), "--build-xcode=PRIVATE-PATH-xcode"), 1},
+		{"Xcode 27.1 on an iOS test", append(arguments("test", "scripts/test.sh", ""), "--build-xcode=27.1"), 1},
+		{"Xcode 27.1 on a windows test", append(arguments("windows-test", "scripts/windows-test.ps1", ""), "--build-xcode=27.1"), 1},
+		{"default Xcode on an iOS test", append(arguments("test", "scripts/test.sh", ""), "--build-xcode=26.3"), 0},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			cmd := exec.Command(os.Args[0], test.args...)

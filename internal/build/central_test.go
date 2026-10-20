@@ -37,8 +37,61 @@ func TestCentralDispatchInputs(t *testing.T) {
 		"artifact_recipient": "age1example",
 		"operation":          "build",
 	}
-	if got := centralDispatchInputs(cfg, want["build_id"], want["snapshot_ref"], false); !reflect.DeepEqual(got, want) {
+	if got := centralDispatchInputs(cfg, want["build_id"], want["snapshot_ref"], false, ""); !reflect.DeepEqual(got, want) {
 		t.Fatalf("centralDispatchInputs() = %#v, want %#v", got, want)
+	}
+}
+
+func TestCentralDispatchInputsBuildXcode(t *testing.T) {
+	cfg := &config.Config{
+		GitHub:   config.GitHubConfig{Owner: "o", Repo: "r"},
+		IOS:      config.IOSConfig{Path: "ios", Scheme: "App", Configuration: "Release"},
+		Security: config.SecurityConfig{Recipient: "age1recipient"},
+	}
+	// The default Xcode is the workflow's own default, so it is never sent: a
+	// workflow that predates build_xcode keeps accepting the dispatch.
+	for _, xcode := range []string{"", config.BuildXcode263} {
+		for _, testFlight := range []bool{false, true} {
+			if _, present := centralDispatchInputs(cfg, "id", "ref", testFlight, xcode)["build_xcode"]; present {
+				t.Errorf("build_xcode %q (testflight %v) was sent as an input", xcode, testFlight)
+			}
+		}
+	}
+	for _, testFlight := range []bool{false, true} {
+		got := centralDispatchInputs(cfg, "id", "ref", testFlight, config.BuildXcode271)
+		without := centralDispatchInputs(cfg, "id", "ref", testFlight, "")
+		if got["build_xcode"] != "27.1" {
+			t.Errorf("testflight %v: build_xcode = %q, want 27.1", testFlight, got["build_xcode"])
+		}
+		delete(got, "build_xcode")
+		if !reflect.DeepEqual(got, without) {
+			t.Errorf("testflight %v: build_xcode changed other inputs: %#v vs %#v", testFlight, got, without)
+		}
+	}
+}
+
+func TestBuildRejectsUnknownXcode(t *testing.T) {
+	identity, err := age.GenerateX25519Identity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	central := &config.Config{
+		Project:  "App",
+		Backend:  config.BackendCentral,
+		GitHub:   config.GitHubConfig{Owner: "source", Repo: "private"},
+		Builder:  config.BuilderConfig{Owner: "builder", Repo: "public", Workflow: "ios-build.yml"},
+		Security: config.SecurityConfig{Recipient: identity.Recipient().String()},
+	}
+	for _, xcode := range []string{"27.0", "27.2", "26", "xcode-27", "macos-15", " 27.1", "27.1\n", "27.1_Release_Candidate", "[27.1]"} {
+		_, err := NewCoordinatorWithOutput(central, nil, &bytes.Buffer{}).Build(context.Background(), BuildOptions{Xcode: xcode})
+		if err == nil || !strings.Contains(err.Error(), "invalid build Xcode") {
+			t.Errorf("Build(Xcode %q) error = %v, want invalid build Xcode", xcode, err)
+		}
+	}
+	repository := &config.Config{Project: "App", Backend: config.BackendRepository, GitHub: config.GitHubConfig{Owner: "o", Repo: "r"}}
+	_, err = NewCoordinatorWithOutput(repository, nil, &bytes.Buffer{}).Build(context.Background(), BuildOptions{Xcode: config.BuildXcode271})
+	if err == nil || !strings.Contains(err.Error(), "only with the central backend") {
+		t.Errorf("Build(repository backend with Xcode 27.1) error = %v", err)
 	}
 }
 
@@ -113,7 +166,7 @@ func TestDecryptBoundedRejectsOversizePlaintext(t *testing.T) {
 
 func TestCentralDispatchInputsUsesRepositoryRootForEmptyIOSPath(t *testing.T) {
 	cfg := &config.Config{GitHub: config.GitHubConfig{Owner: "o", Repo: "r"}}
-	if got := centralDispatchInputs(cfg, "id", "ref", false)["ios_path"]; got != "." {
+	if got := centralDispatchInputs(cfg, "id", "ref", false, "")["ios_path"]; got != "." {
 		t.Fatalf("ios_path = %q, want .", got)
 	}
 }
@@ -127,8 +180,8 @@ func TestCentralDispatchInputsKeepRepositoriesIndependent(t *testing.T) {
 		GitHub:   config.GitHubConfig{Owner: "team-b", Repo: "private-b"},
 		Security: config.SecurityConfig{Recipient: "age1recipient-b"},
 	}
-	a := centralDispatchInputs(first, "550e8400-e29b-41d4-a716-446655440000", "refs/ios-builder/jobs/a", false)
-	b := centralDispatchInputs(second, "6ba7b810-9dad-41d1-80b4-00c04fd430c8", "refs/ios-builder/jobs/b", false)
+	a := centralDispatchInputs(first, "550e8400-e29b-41d4-a716-446655440000", "refs/ios-builder/jobs/a", false, "")
+	b := centralDispatchInputs(second, "6ba7b810-9dad-41d1-80b4-00c04fd430c8", "refs/ios-builder/jobs/b", false, "")
 	if a["source_owner"] == b["source_owner"] || a["source_repo"] == b["source_repo"] || a["build_id"] == b["build_id"] {
 		t.Fatalf("central dispatches were not isolated: %#v %#v", a, b)
 	}
@@ -147,7 +200,7 @@ func TestCentralTestFlightDispatchForcesRelease(t *testing.T) {
 		IOS:      config.IOSConfig{Configuration: "Debug"},
 		Security: config.SecurityConfig{Recipient: "age1recipient"},
 	}
-	got := centralDispatchInputs(cfg, "id", "ref", true)
+	got := centralDispatchInputs(cfg, "id", "ref", true, "")
 	if got["operation"] != "testflight" || got["configuration"] != "Release" {
 		t.Fatalf("TestFlight dispatch = %#v", got)
 	}

@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/MobAI-App/ios-builder/internal/build"
+	"github.com/spf13/cobra"
 )
 
 func TestResolveTestScript(t *testing.T) {
@@ -90,6 +91,62 @@ func TestResolveTestImage(t *testing.T) {
 				t.Fatalf("resolveTestImage() = %q, %v; want %q", got, err, test.want)
 			}
 		})
+	}
+}
+
+func TestResolveBuildXcode(t *testing.T) {
+	tests := []struct {
+		name, flag, config string
+		central            bool
+		want, wantErr      string
+	}{
+		{name: "neither is the default", central: true},
+		{name: "flag", flag: "27.1", central: true, want: "27.1"},
+		{name: "flag default", flag: "26.3", central: true, want: "26.3"},
+		{name: "config", config: "27.1", central: true, want: "27.1"},
+		{name: "flag overrides config", flag: "26.3", config: "27.1", central: true, want: "26.3"},
+		{name: "flag is trimmed", flag: " 27.1 ", central: true, want: "27.1"},
+		{name: "beta-only 27.2", flag: "27.2", central: true, wantErr: `build Xcode "27.2" from --xcode must be one of 26.3, 27.1`},
+		{name: "27.0", flag: "27.0", central: true, wantErr: "from --xcode"},
+		{name: "image name", flag: "xcode-27", central: true, wantErr: "from --xcode"},
+		{name: "bundle name", flag: "27.1_Release_Candidate", central: true, wantErr: "from --xcode"},
+		{name: "bad config", config: "26.4", central: true, wantErr: "from ios.buildXcode in builder.json"},
+		{name: "valid flag does not hide a bad config", flag: "27.1", config: "26.4", central: true, want: "27.1"},
+		{name: "27.1 needs the central backend", flag: "27.1", wantErr: "requires backend=central"},
+		{name: "config 27.1 needs the central backend", config: "27.1", wantErr: "from ios.buildXcode in builder.json requires backend=central"},
+		{name: "the default works on the repository backend", flag: "26.3", want: "26.3"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			got, err := resolveBuildXcode(test.flag, test.config, test.central)
+			if test.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), test.wantErr) {
+					t.Fatalf("resolveBuildXcode() = %q, %v; want error containing %q", got, err, test.wantErr)
+				}
+				return
+			}
+			if err != nil || got != test.want {
+				t.Fatalf("resolveBuildXcode() = %q, %v; want %q", got, err, test.want)
+			}
+		})
+	}
+}
+
+func TestXcodeFlagIsOnIOSBuildAndDeploy(t *testing.T) {
+	for name, cmd := range map[string]*cobra.Command{"ios build": iosBuildCmd, "ios deploy": iosDeployCmd} {
+		flag := cmd.Flags().Lookup("xcode")
+		if flag == nil {
+			t.Errorf("builder %s has no --xcode flag", name)
+			continue
+		}
+		if flag.DefValue != "" {
+			t.Errorf("builder %s --xcode default = %q, want empty (the default Xcode)", name, flag.DefValue)
+		}
+	}
+	for name, cmd := range map[string]*cobra.Command{"ios test": iosTestCmd, "windows test": windowsTestCmd} {
+		if cmd.Flags().Lookup("xcode") != nil {
+			t.Errorf("builder %s must not have --xcode", name)
+		}
 	}
 }
 

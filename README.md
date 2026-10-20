@@ -50,7 +50,7 @@ Local workstation (Linux/WSL/macOS; Windows through PowerShell/WSL):
 - A Git remote using an explicit `github.com` HTTPS or SSH URL
 - Builder CLI
 
-Builds use the stable `macos-15` runner image and test runs use `macos-26` by default; both select Xcode 26.3. A test run can opt in to the `xcode-27` image with `--image xcode-27`. Windows test runs use `windows-2025`. No local Mac, Xcode, certificate, or provisioning profile is required for an unsigned central build. TestFlight deployment requires an Apple Distribution certificate, one or more App Store distribution provisioning profiles, and an App Store Connect API key.
+Builds use the stable `macos-15` runner image and test runs use `macos-26` by default; both select Xcode 26.3. A test run can opt in to the `xcode-27` image with `--image xcode-27`, and an unsigned build or TestFlight deployment can build with Xcode 27.1 (the iOS 27.1 SDK) with `--xcode 27.1`, see [Building with Xcode 27.1](#building-with-xcode-271). Windows test runs use `windows-2025`. No local Mac, Xcode, certificate, or provisioning profile is required for an unsigned central build. TestFlight deployment requires an Apple Distribution certificate, one or more App Store distribution provisioning profiles, and an App Store Connect API key.
 
 ## Install the CLI
 
@@ -264,6 +264,23 @@ The protected job replaces only `CFBundleVersion` with the unique GitHub Actions
 `CFBundleShortVersionString` is preserved. It validates the signed IPA with App
 Store Connect before uploading it.
 
+### Building with Xcode 27.1
+
+By default builds use Xcode 26.3 on the `macos-15` image. `--xcode 27.1` (or `"buildXcode": "27.1"` under `ios` in `builder.json`; the flag wins) builds that one run with Xcode 27.1, and therefore the iOS 27.1 SDK, on GitHub's `xcode-27` image:
+
+```bash
+builder ios deploy --xcode 27.1
+builder ios build --xcode 27.1        # unsigned IPA
+```
+
+Only the toolchain changes. The app's minimum iOS version stays whatever the project says (`IPHONEOS_DEPLOYMENT_TARGET`), so an app that supports iOS 26.0 still does.
+
+The build job's "Select Xcode for the build" step resolves `27.1` to `/Applications/Xcode_27.1_Release_Candidate.app` when it exists. Otherwise it takes an `/Applications/Xcode_27.1*.app` whose `xcodebuild -version` reports 27.1, whose name (and the name of the directory a link resolves to) does not say beta, and whose build number does not end in the lowercase letter Apple puts on pre-release builds. If none qualifies the job fails at once with a plain message rather than building with a beta: App Store Connect rejects builds made with a beta Xcode, and the release candidate or release is accepted. A beta that carries neither of those marks is still stopped by the `--validate-app` call the signing job makes before it uploads.
+
+The signing and upload job stays on `macos-15` with Xcode 26.3 in both cases. It only runs `codesign`, `security` and `altool`, none of which reads an SDK; the SDK and Xcode that built the app are recorded inside the IPA (`DTSDKName`, `DTXcode`, `DTXcodeBuild`) and App Store Connect checks them server-side. Keeping the job that holds the Apple credentials on the stable image also keeps it independent of the newer image.
+
+The choice is a strict allowlist, `26.3` or `27.1`, checked by the CLI, by the workflow's `build_xcode` choice input, and again by the trusted runner before any credential exists; the build job's `runs-on` is one of two literals picked by comparing the input, never the input's value. The default is not sent at all, so the CLI keeps working against a builder workflow that predates the input; `--xcode 27.1` needs a workflow that has it. It needs the central backend, and `builder ios test` has its own `--image` choice.
+
 ## Running tests
 
 `builder ios test` runs the private project's own test suite on the public builder's `macos-26` runner (Xcode 26.3 and its iOS 26.2 simulators; `--image xcode-27` selects the Xcode 27 image, see [Runner image](#runner-image)), with the same privacy model as a build:
@@ -288,7 +305,7 @@ By default a test run uses the `macos-26` image with Xcode 26.3. `--image xcode-
 builder ios test --image xcode-27
 ```
 
-The choice is a strict allowlist, `macos-26` or `xcode-27`, checked by the CLI, by the workflow's `test_image` choice input, and again by the trusted runner before any credential exists; the job's `runs-on` is one of those two literals, never an input's value. The paid `xcode-27-xlarge` and every other runner label are rejected. The default image is not sent at all, so the CLI keeps working against a builder workflow that predates the input; `--image xcode-27` needs a workflow that has it. Build and TestFlight jobs always stay on `macos-15`, and `builder windows test` has no image choice.
+The choice is a strict allowlist, `macos-26` or `xcode-27`, checked by the CLI, by the workflow's `test_image` choice input, and again by the trusted runner before any credential exists; the job's `runs-on` is one of those two literals, never an input's value. The paid `xcode-27-xlarge` and every other runner label are rejected. The default image is not sent at all, so the CLI keeps working against a builder workflow that predates the input; `--image xcode-27` needs a workflow that has it. Build and TestFlight jobs stay on `macos-15` unless `--xcode 27.1` moves the build step to the `xcode-27` image (see [Building with Xcode 27.1](#building-with-xcode-271)), and `builder windows test` has no image choice.
 
 The script is a file in the repository, named relative to the repository root with forward slashes, using only letters, digits, `.`, `_`, `+`, `-` and `/`, with no `..`, no `.git`, and no segment starting with `-`. Before snapshotting, the CLI checks that the file exists, stays inside the repository, and is not excluded by `.gitignore`. It then snapshots and dispatches like `ios build` (with `operation: test` and `test_script`), shows progress, downloads and decrypts the results, prints the report, and writes:
 
