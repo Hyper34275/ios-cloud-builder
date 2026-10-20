@@ -24,6 +24,7 @@ go install ./cmd/builder
 ./builder auth github       # Authenticate with GitHub (OAuth device flow)
 ./builder init              # Set up workflow in current repo
 ./builder ios build         # Trigger build and download IPA to ./dist/
+./builder ios deploy --xcode 27.1  # TestFlight deploy with the build step on the xcode-27 image (Xcode 27.1 RC, iOS 27.1 SDK); signing stays on macos-15; also on `ios build`; allowlist 26.3|27.1
 ./builder ios test          # Central backend: run ios.testScript on macos-26, decrypt log + report.md to ./dist/
 ./builder ios test --image xcode-27  # Same, on the xcode-27 runner image (macOS 27, newest Xcode 27.x); allowlist macos-26|xcode-27
 ./builder windows test      # Central backend: run windows.testScript on windows-2025, decrypt log, report.md and windows.artifact to ./dist/

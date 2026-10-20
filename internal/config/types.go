@@ -52,6 +52,32 @@ func ValidateTestImage(value string) error {
 	return fmt.Errorf("must be one of %s", strings.Join(TestImages(), ", "))
 }
 
+// Xcode versions `builder ios build` and `builder ios deploy` can build with.
+// The central workflow's build_xcode input is a choice of exactly these two
+// values and the build job's runs-on is derived from it, so a value outside this
+// list can never become a runner label.
+const (
+	// BuildXcode263 is the default: Xcode 26.3 on the macos-15 image.
+	BuildXcode263 = "26.3"
+	// BuildXcode271 is Xcode 27.1 (the release candidate, never a beta) on the
+	// xcode-27 image, which builds with the iOS 27.1 SDK.
+	BuildXcode271 = "27.1"
+)
+
+// BuildXcodes lists every accepted build Xcode, the default first.
+func BuildXcodes() []string { return []string{BuildXcode263, BuildXcode271} }
+
+// ValidateBuildXcode accepts exactly the versions in BuildXcodes. The empty
+// string means the default and is accepted by callers that allow it.
+func ValidateBuildXcode(value string) error {
+	for _, version := range BuildXcodes() {
+		if value == version {
+			return nil
+		}
+	}
+	return fmt.Errorf("must be one of %s", strings.Join(BuildXcodes(), ", "))
+}
+
 // Backend identifies where a build workflow is executed.
 type Backend string
 
@@ -140,6 +166,9 @@ type IOSConfig struct {
 	// TestImage is the runner image `builder ios test` uses: macos-26 (the
 	// default when empty) or xcode-27. `--image` overrides it.
 	TestImage string `json:"testImage,omitempty"`
+	// BuildXcode is the Xcode `builder ios build` and `builder ios deploy` use:
+	// 26.3 (the default when empty) or 27.1. `--xcode` overrides it.
+	BuildXcode string `json:"buildXcode,omitempty"`
 }
 
 // MobAIConfig holds MobAI settings for local development
@@ -250,6 +279,11 @@ func (c *Config) Validate() error {
 	if c.IOS.TestImage != "" {
 		if err := ValidateTestImage(c.IOS.TestImage); err != nil {
 			return &ValidationError{Field: "ios.testImage", Message: err.Error()}
+		}
+	}
+	if c.IOS.BuildXcode != "" {
+		if err := ValidateBuildXcode(c.IOS.BuildXcode); err != nil {
+			return &ValidationError{Field: "ios.buildXcode", Message: err.Error()}
 		}
 	}
 	if c.Windows.TestScript != "" {

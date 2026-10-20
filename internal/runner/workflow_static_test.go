@@ -95,6 +95,7 @@ func TestCentralWorkflowSecurityProperties(t *testing.T) {
 		"operation:", "environment: apple-production", "APPLE_SIGNING_RECIPIENT",
 		"APPLE_SIGNING_AGE_IDENTITY", "APPLE_DISTRIBUTION_P12", "APPLE_PROVISIONING_PROFILE", "APPLE_PROVISIONING_PROFILES",
 		"ASC_API_KEY_P8", "deploy-testflight", "--build-number", "needs.build.outputs.build_number", "github.run_attempt", "ios-builder-deploy-${{ inputs.build_id }}",
+		"runs-on: ${{ inputs.build_xcode == '27.1' && 'xcode-27' || 'macos-15' }}", "build_xcode:",
 		"runs-on: ${{ inputs.test_image == 'xcode-27' && 'xcode-27' || 'macos-26' }}", "test_image:", "test_script:", "execute-tests", "encrypted/test.log.age", "encrypted/report.md.age",
 		"runs-on: windows-2025", "artifact_path:", "windows-test", "encrypted/artifact.age", "shell: pwsh",
 	} {
@@ -317,8 +318,10 @@ func TestCentralWorkflowTestOperation(t *testing.T) {
 	if image.Required || image.Type != "choice" || image.Default != "macos-26" || !reflect.DeepEqual(image.Options, []string{"macos-26", "xcode-27"}) {
 		t.Errorf("test_image input = %+v, want an optional choice of exactly macos-26 and xcode-27 defaulting to macos-26", image)
 	}
+	// The only jobs whose runner depends on an input are the test job and the
+	// build job, and each only through a comparison with a fixed literal.
 	for name, job := range workflow.Jobs {
-		if name != "test" && strings.Contains(job.RunsOn, "inputs.") {
+		if name != "test" && name != "build" && strings.Contains(job.RunsOn, "inputs.") {
 			t.Errorf("job %s takes its runner from an input: %q", name, job.RunsOn)
 		}
 	}

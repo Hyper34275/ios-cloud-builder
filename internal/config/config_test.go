@@ -317,6 +317,29 @@ func TestConfig_TestImage(t *testing.T) {
 	}
 }
 
+func TestConfig_BuildXcode(t *testing.T) {
+	base := Config{Project: "App", GitHub: GitHubConfig{Owner: "owner", Repo: "repo"}}
+	for _, xcode := range []string{"", "26.3", "27.1"} {
+		cfg := base
+		cfg.IOS.BuildXcode = xcode
+		if err := cfg.Validate(); err != nil {
+			t.Errorf("ios.buildXcode %q rejected: %v", xcode, err)
+		}
+	}
+	for _, xcode := range []string{"27.0", "27.2", "26", "27", "xcode-27", "macos-15", " 27.1", "27.1\n", "27.1_Release_Candidate"} {
+		cfg := base
+		cfg.IOS.BuildXcode = xcode
+		err := cfg.Validate()
+		validationErr, ok := err.(*ValidationError)
+		if !ok || validationErr.Field != "ios.buildXcode" {
+			t.Errorf("ios.buildXcode %q: Validate() = %v, want an ios.buildXcode error", xcode, err)
+		}
+	}
+	if got := BuildXcodes(); len(got) != 2 || got[0] != BuildXcode263 || got[1] != BuildXcode271 {
+		t.Errorf("BuildXcodes() = %v", got)
+	}
+}
+
 func TestManager_TestScriptRoundTrip(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "builder.json")
 	if err := os.WriteFile(path, []byte(`{
@@ -351,6 +374,39 @@ func TestManager_TestScriptRoundTrip(t *testing.T) {
 	}
 	if data, _ := os.ReadFile(path); bytes.Contains(data, []byte("testScript")) {
 		t.Fatalf("an unset testScript was written: %s", data)
+	}
+}
+
+func TestManager_BuildXcodeRoundTrip(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "builder.json")
+	if err := os.WriteFile(path, []byte(`{
+  "project": "App",
+  "platform": "ios",
+  "github": {"owner": "owner", "repo": "repo"},
+  "ios": {"path": "ios", "buildXcode": "27.1"}
+}`), 0644); err != nil {
+		t.Fatal(err)
+	}
+	mgr := &Manager{path: path}
+	cfg, err := mgr.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.IOS.BuildXcode != "27.1" {
+		t.Fatalf("IOS.BuildXcode = %q", cfg.IOS.BuildXcode)
+	}
+	if err := mgr.Save(cfg); err != nil {
+		t.Fatal(err)
+	}
+	if data, _ := os.ReadFile(path); !bytes.Contains(data, []byte(`"buildXcode": "27.1"`)) {
+		t.Fatalf("saved builder.json = %s", data)
+	}
+	cfg.IOS.BuildXcode = ""
+	if err := mgr.Save(cfg); err != nil {
+		t.Fatal(err)
+	}
+	if data, _ := os.ReadFile(path); bytes.Contains(data, []byte("buildXcode")) {
+		t.Fatalf("an unset buildXcode was written: %s", data)
 	}
 }
 

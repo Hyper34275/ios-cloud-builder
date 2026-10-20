@@ -90,6 +90,7 @@ func validateInputs(args []string) error {
 	flags.StringVar(&in.TestScript, "test-script", "", "")
 	flags.StringVar(&in.ArtifactPath, "artifact-path", "", "")
 	flags.StringVar(&in.TestImage, "test-image", "", "")
+	flags.StringVar(&in.BuildXcode, "build-xcode", "", "")
 	if err := flags.Parse(args); err != nil || flags.NArg() != 0 {
 		return fmt.Errorf("invalid validation arguments")
 	}
