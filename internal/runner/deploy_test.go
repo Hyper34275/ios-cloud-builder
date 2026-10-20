@@ -858,3 +858,16 @@ func TestAltoolArgsSupportsTeamAndIndividualKeys(t *testing.T) {
 		t.Fatalf("individual args = %#v", individual)
 	}
 }
+
+func TestASCBundleIDNameUsesOnlyLettersDigitsAndSpaces(t *testing.T) {
+	cases := map[string]string{
+		"com.KeyoLock.app.watchkitapp": "com KeyoLock app watchkitapp",
+		"com.example.app":              "com example app",
+		"com.example-app.ext_1":        "com example app ext 1",
+	}
+	for in, want := range cases {
+		if got := ascBundleIDName(in); got != want {
+			t.Errorf("ascBundleIDName(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
