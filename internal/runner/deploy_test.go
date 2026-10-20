@@ -871,3 +871,16 @@ func TestASCBundleIDNameUsesOnlyLettersDigitsAndSpaces(t *testing.T) {
 		}
 	}
 }
+
+func TestAltoolReportedFailureReadsTheOutput(t *testing.T) {
+	failed := "ERROR: Validation failed (409) Invalid Bundle Executable.\nUPLOAD FAILED with 1 error\nFailed to upload package."
+	if !altoolReportedFailure(failed) {
+		t.Fatal("an UPLOAD FAILED output must count as a failure")
+	}
+	if !altoolReportedFailure("VERIFY FAILED with 1 error\nFailed to validate package.") {
+		t.Fatal("a VERIFY FAILED output must count as a failure")
+	}
+	if altoolReportedFailure("UPLOAD SUCCEEDED with no errors\nDelivery UUID: 1234") {
+		t.Fatal("a successful upload must not count as a failure")
+	}
+}
