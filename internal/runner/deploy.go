@@ -280,24 +280,24 @@ func deployTestFlight(ctx context.Context, options *TestFlightOptions, credentia
 	if err != nil {
 		return fmt.Errorf("create temporary keychain password")
 	}
-	defer func() { _ = run.runSensitive(workRoot, "/usr/bin/security", "delete-keychain", keychainPath) }()
-	if err := run.runSensitive(workRoot, "/usr/bin/security", "create-keychain", "-p", keychainPassword, keychainPath); err != nil {
+	defer func() { _ = run.runSecurity(workRoot, "delete-keychain", keychainPath) }()
+	if err := run.runSecurity(workRoot, "create-keychain", "-p", keychainPassword, keychainPath); err != nil {
 		return err
 	}
-	if err := run.runSensitive(workRoot, "/usr/bin/security", "set-keychain-settings", "-lut", "21600", keychainPath); err != nil {
+	if err := run.runSecurity(workRoot, "set-keychain-settings", "-lut", "21600", keychainPath); err != nil {
 		return err
 	}
-	if err := run.runSensitive(workRoot, "/usr/bin/security", "unlock-keychain", "-p", keychainPassword, keychainPath); err != nil {
+	if err := run.runSecurity(workRoot, "unlock-keychain", "-p", keychainPassword, keychainPath); err != nil {
 		return err
 	}
-	if err := run.runSensitive(workRoot, "/usr/bin/security", "import", p12Path, "-P", credentials.p12Password,
+	if err := run.runSecurity(workRoot, "import", p12Path, "-P", credentials.p12Password,
 		"-T", "/usr/bin/codesign", "-t", "cert", "-f", "pkcs12", "-k", keychainPath); err != nil {
 		return err
 	}
-	if err := run.runSensitive(workRoot, "/usr/bin/security", "set-key-partition-list", "-S", "apple-tool:,apple:,codesign:", "-s", "-k", keychainPassword, keychainPath); err != nil {
+	if err := run.runSecurity(workRoot, "set-key-partition-list", "-S", "apple-tool:,apple:,codesign:", "-s", "-k", keychainPassword, keychainPath); err != nil {
 		return err
 	}
-	if err := run.runSensitive(workRoot, "/usr/bin/security", "list-keychains", "-d", "user", "-s", keychainPath); err != nil {
+	if err := run.runSecurity(workRoot, "list-keychains", "-d", "user", "-s", keychainPath); err != nil {
 		return err
 	}
 	// Keep code-signing identity discovery scoped to the disposable keychain.
@@ -446,24 +446,60 @@ func deployTestFlight(ctx context.Context, options *TestFlightOptions, credentia
 	if err != nil || !info.Mode().IsRegular() || info.Size() == 0 {
 		return fmt.Errorf("signed IPA packaging produced no output")
 	}
-	if err := uploadRun.runSensitive(workRoot, "/usr/bin/xcrun", altoolArgs("--validate-app", signedIPA, credentials)...); err != nil {
+	if err := uploadRun.runAltool(workRoot, altoolArgs("--validate-app", signedIPA, credentials)...); err != nil {
 		return fmt.Errorf("validation with App Store Connect failed")
 	}
-	if err := uploadRun.runSensitive(workRoot, "/usr/bin/xcrun", altoolArgs("--upload-app", signedIPA, credentials)...); err != nil {
+	if err := uploadRun.runAltool(workRoot, altoolArgs("--upload-app", signedIPA, credentials)...); err != nil {
 		return fmt.Errorf("upload to App Store Connect failed")
 	}
 	_, _ = fmt.Fprintln(privateLog, "App Store Connect accepted the signed IPA upload.")
 	return nil
 }
 
-func (e executor) runSensitive(dir, program string, args ...string) error {
+// runSecurity runs /usr/bin/security, whose arguments carry keychain secrets.
+func (e executor) runSecurity(dir string, args ...string) error {
+	_, err := e.runSensitiveOutput(dir, "/usr/bin/security", args...)
+	return err
+}
+
+// runSensitiveOutput runs a command whose arguments carry secrets: the log gets
+// its output but not its arguments. The output is also returned.
+func (e executor) runSensitiveOutput(dir, program string, args ...string) (string, error) {
+	var output bytes.Buffer
 	_, _ = fmt.Fprintf(e.log, "\n$ %s [arguments redacted]\n", filepath.Base(program))
 	cmd := exec.CommandContext(e.ctx, program, args...)
-	cmd.Dir, cmd.Env, cmd.Stdout, cmd.Stderr = dir, e.env, e.log, e.log
+	cmd.Dir, cmd.Env = dir, e.env
+	cmd.Stdout = io.MultiWriter(e.log, &output)
+	cmd.Stderr = io.MultiWriter(e.log, &output)
 	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("%s failed: %w", filepath.Base(program), err)
+		return output.String(), fmt.Errorf("%s failed: %w", filepath.Base(program), err)
+	}
+	return output.String(), nil
+}
+
+// runAltool runs altool like runSensitive and also reads what it printed: altool
+// can exit 0 after "UPLOAD FAILED" or "VERIFY FAILED" (App Store Connect refused
+// the package), which must not be reported as an accepted upload.
+func (e executor) runAltool(dir string, args ...string) error {
+	output, err := e.runSensitiveOutput(dir, "/usr/bin/xcrun", args...)
+	if err != nil {
+		return err
+	}
+	if altoolReportedFailure(output) {
+		return fmt.Errorf("altool reported a failure")
 	}
 	return nil
+}
+
+// altoolReportedFailure reports whether altool's output says App Store Connect
+// refused the package, whatever its exit status was.
+func altoolReportedFailure(output string) bool {
+	for _, marker := range []string{"UPLOAD FAILED", "VERIFY FAILED", "Failed to upload package", "Failed to validate package"} {
+		if strings.Contains(output, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 func decryptFileBounded(identity age.Identity, sourcePath, destinationPath string, limit int64) error {
