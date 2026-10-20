@@ -107,7 +107,7 @@ func createASCBundleID(ctx context.Context, api *appStoreConnectClient, bundleID
 		"type": "bundleIds",
 		"attributes": map[string]any{
 			"identifier": bundleID,
-			"name":       bundleID,
+			"name":       ascBundleIDName(bundleID),
 			"platform":   "IOS",
 		},
 	}}
@@ -119,6 +119,19 @@ func createASCBundleID(ctx context.Context, api *appStoreConnectClient, bundleID
 		return "", fmt.Errorf("no created bundle identifier returned by App Store Connect")
 	}
 	return response.Data.ID, nil
+}
+
+// ascBundleIDName is the Identifier's display name. App Store Connect accepts
+// only letters, digits and spaces there ("com.example.app.watchkitapp" is
+// refused with HTTP 409), so every other character becomes a space.
+func ascBundleIDName(bundleID string) string {
+	name := strings.Map(func(r rune) rune {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') {
+			return r
+		}
+		return ' '
+	}, bundleID)
+	return strings.Join(strings.Fields(name), " ")
 }
 
 func createASCProvisioningProfile(ctx context.Context, api *appStoreConnectClient, bundleResourceID, bundleID, identityFingerprint, destinationDir string) (string, error) {
