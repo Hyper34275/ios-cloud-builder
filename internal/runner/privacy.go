@@ -2,11 +2,11 @@ package runner
 
 import (
 	"bytes"
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 
@@ -51,12 +51,15 @@ func MaskCommands(eventPath string) ([]string, error) {
 	seen := map[string]bool{}
 	var commands []string
 	add := func(value string) {
-		value = strings.TrimSpace(value)
-		if len(value) < 3 || genericInputValues[value] || seen[value] || strings.ContainsAny(value, "\r\n") {
-			return
+		// A mask command is one line, so each line of a value is its own mask.
+		for _, line := range strings.FieldsFunc(value, func(r rune) bool { return r == '\r' || r == '\n' }) {
+			line = strings.TrimSpace(line)
+			if len(line) < 3 || genericInputValues[line] || seen[line] {
+				continue
+			}
+			seen[line] = true
+			commands = append(commands, "::add-mask::"+line)
 		}
-		seen[value] = true
-		commands = append(commands, "::add-mask::"+value)
 	}
 	for _, name := range maskedInputs {
 		value, _ := event.Inputs[name].(string)
@@ -75,46 +78,61 @@ var buildCountPattern = regexp.MustCompile(`^[1-9][0-9]{0,17}$`)
 
 const maxSealedBuildNumberBytes = 4096
 
+// SealedBuildNumberFile is the name of the sealed commit count the build job
+// uploads for the signing job.
+const SealedBuildNumberFile = "build-number.age"
+
 // SealBuildNumber encrypts the snapshot's commit count to the protected
-// signing identity and returns it base64-encoded, so the count can cross from
-// the build job to the signing job as a job output without appearing in the
-// public log.
-func SealBuildNumber(count, recipientText string) (string, error) {
+// signing identity and writes it to outputPath, so the count can cross from
+// the build job to the signing job as an artifact without appearing in the
+// public log. A job output would not do: GitHub drops an output whose value
+// happens to contain a masked string.
+func SealBuildNumber(count, recipientText, outputPath string) error {
 	if !buildCountPattern.MatchString(count) {
-		return "", fmt.Errorf("invalid build count")
+		return fmt.Errorf("invalid build count")
+	}
+	if !filepath.IsAbs(outputPath) || filepath.Base(outputPath) != SealedBuildNumberFile {
+		return fmt.Errorf("invalid sealed build number path")
 	}
 	recipient, err := age.ParseX25519Recipient(recipientText)
 	if err != nil {
-		return "", fmt.Errorf("parse signing AGE recipient")
+		return fmt.Errorf("parse signing AGE recipient")
 	}
 	var sealed bytes.Buffer
 	writer, err := age.Encrypt(&sealed, recipient)
 	if err != nil {
-		return "", fmt.Errorf("seal build number")
+		return fmt.Errorf("seal build number")
 	}
 	if _, err := io.WriteString(writer, count); err != nil {
-		return "", fmt.Errorf("seal build number")
+		return fmt.Errorf("seal build number")
 	}
 	if err := writer.Close(); err != nil {
-		return "", fmt.Errorf("seal build number")
+		return fmt.Errorf("seal build number")
 	}
-	return base64.StdEncoding.EncodeToString(sealed.Bytes()), nil
+	if err := os.MkdirAll(filepath.Dir(outputPath), 0700); err != nil {
+		return fmt.Errorf("prepare sealed build number")
+	}
+	if err := os.WriteFile(outputPath, sealed.Bytes(), 0600); err != nil {
+		return fmt.Errorf("write sealed build number")
+	}
+	return nil
 }
 
 var buildAttemptPattern = regexp.MustCompile(`^[1-9][0-9]{0,5}$`)
 
-// UnsealBuildNumber decrypts a SealBuildNumber value with the signing
-// identity and appends the run attempt, giving the CFBundleVersion.
-func UnsealBuildNumber(sealed, attempt, identityText string) (string, error) {
+// UnsealBuildNumber decrypts a SealBuildNumber file with the signing identity
+// and appends the run attempt, giving the CFBundleVersion.
+func UnsealBuildNumber(sealedPath, attempt, identityText string) (string, error) {
 	if !buildAttemptPattern.MatchString(attempt) {
 		return "", fmt.Errorf("invalid build attempt")
 	}
-	if len(sealed) > maxSealedBuildNumberBytes {
-		return "", fmt.Errorf("invalid sealed build number")
+	info, err := os.Lstat(sealedPath)
+	if err != nil || !info.Mode().IsRegular() || info.Size() > maxSealedBuildNumberBytes {
+		return "", fmt.Errorf("sealed build number is missing or invalid")
 	}
-	ciphertext, err := base64.StdEncoding.DecodeString(sealed)
+	ciphertext, err := os.ReadFile(sealedPath)
 	if err != nil {
-		return "", fmt.Errorf("invalid sealed build number")
+		return "", fmt.Errorf("read sealed build number")
 	}
 	identity, err := age.ParseX25519Identity(strings.TrimSpace(identityText))
 	if err != nil {

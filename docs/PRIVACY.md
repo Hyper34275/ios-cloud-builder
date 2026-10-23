@@ -30,8 +30,11 @@ workflow rules.
   than the ID itself, and "a private project" rather than its name.
 - Never paste build logs, crash logs, profile names, App Store Connect output
   or screenshots from a private project.
-- The CI *Privacy* job checks the title, body, commits and added lines.
-  Editing the title or body reruns it.
+- The *Privacy* workflow (`.github/workflows/privacy.yml`) checks the title,
+  body, commits and added lines of every pull request, whatever its base.
+  Editing the title or body reruns it. A pull request from a fork gets no
+  secrets, so private names are not checked there; a maintainer must review
+  it by hand.
 
 ## The central workflow
 
@@ -49,8 +52,10 @@ copy in `internal/workflow/templates/`):
   variable. Variables are printed in clear. Only `APP_CLIENT_ID` and
   `APPLE_SIGNING_RECIPIENT` are variables, because they are public by design.
 - Never `echo` a value derived from private source (commit counts, file
-  names, versions). Pass it between jobs encrypted, as the sealed TestFlight
-  build number is.
+  names, versions). Pass it between jobs as an AGE-encrypted artifact, as the
+  sealed TestFlight build number is. Do not use job outputs: they are not
+  encrypted, and GitHub silently drops an output that happens to contain a
+  masked value.
 - Project output goes only to the private log, which is encrypted. The public
   log carries fixed status lines only. Never add `GITHUB_STEP_SUMMARY`,
   annotations or job outputs that carry project data.

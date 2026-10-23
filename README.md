@@ -141,7 +141,7 @@ Configure these values in `apple-production`:
 
 | Kind | Name | Format |
 |---|---|---|
-| Environment variable | `APPLE_TEAM_ID` | 10-character Apple Team ID |
+| Environment secret | `APPLE_TEAM_ID` | 10-character Apple Team ID (a secret, not a variable: variables are printed in the public log) |
 | Environment secret | `APPLE_SIGNING_AGE_IDENTITY` | dedicated AGE identity |
 | Environment secret | `APPLE_DISTRIBUTION_P12` | base64-encoded `.p12` |
 | Environment secret | `APPLE_DISTRIBUTION_P12_PASSWORD` | `.p12` password |

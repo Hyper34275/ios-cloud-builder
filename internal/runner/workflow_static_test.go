@@ -94,7 +94,7 @@ func TestCentralWorkflowSecurityProperties(t *testing.T) {
 		"go mod verify",
 		"operation:", "environment: apple-production", "APPLE_SIGNING_RECIPIENT",
 		"APPLE_SIGNING_AGE_IDENTITY", "APPLE_DISTRIBUTION_P12", "APPLE_PROVISIONING_PROFILE", "APPLE_PROVISIONING_PROFILES",
-		"ASC_API_KEY_P8", "deploy-testflight", "--sealed-build-number", "needs.build.outputs.sealed_build_number", "github.run_attempt", "ios-builder-deploy-${{ inputs.build_id }}",
+		"ASC_API_KEY_P8", "deploy-testflight", "--sealed-build-number-file", "ios-builder-build-number-${{ inputs.build_id }}", "github.run_attempt", "ios-builder-deploy-${{ inputs.build_id }}",
 		"runs-on: ${{ inputs.build_xcode == '27.1' && 'xcode-27' || 'macos-15' }}", "build_xcode:",
 		"runs-on: ${{ inputs.test_image == 'xcode-27' && 'xcode-27' || 'macos-26' }}", "test_image:", "test_script:", "execute-tests", "encrypted/test.log.age", "encrypted/report.md.age",
 		"runs-on: windows-2025", "artifact_path:", "windows-test", "encrypted/artifact.age", "shell: pwsh",

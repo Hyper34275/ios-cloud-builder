@@ -28,11 +28,14 @@ import (
 const (
 	centralArtifactPrefix = "ios-builder-"
 	centralDeployPrefix   = "ios-builder-deploy-"
-	centralIPAFile        = "App.ipa.age"
-	centralLogFile        = "build.log.age"
-	centralTestLogFile    = "test.log.age"
-	centralReportFile     = "report.md.age"
-	centralArtifactFile   = "artifact.age"
+	// centralBuildNumberPrefix names the sealed TestFlight build number the
+	// build job hands to the signing job.
+	centralBuildNumberPrefix = "ios-builder-build-number-"
+	centralIPAFile           = "App.ipa.age"
+	centralLogFile           = "build.log.age"
+	centralTestLogFile       = "test.log.age"
+	centralReportFile        = "report.md.age"
+	centralArtifactFile      = "artifact.age"
 	// centralInstallerFile is a Mac installer identity created by a macOS
 	// deployment, encrypted to the caller like the diagnostic log.
 	centralInstallerFile = "mac-installer-identity.json.age"
@@ -114,6 +117,9 @@ func (c *Coordinator) buildCentral(parent context.Context, opts BuildOptions) (*
 	defer c.deleteCentralArtifact(owner, repo, baseArtifact.ID)
 	artifact := baseArtifact
 	if opts.TestFlight {
+		if sealed, findErr := c.github.FindArtifactByName(ctx, owner, repo, run.ID, centralBuildNumberPrefix+buildID); findErr == nil {
+			defer c.deleteCentralArtifact(owner, repo, sealed.ID)
+		}
 		deployName := centralDeployPrefix + buildID
 		if run.Conclusion == "success" {
 			artifact, err = c.github.PollForRunArtifact(ctx, owner, repo, run.ID, deployName, artifactIndexTimeout)
