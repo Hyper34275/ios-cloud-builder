@@ -7,8 +7,10 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -74,6 +76,13 @@ func parseRepositoryURL(raw string) (string, string, bool) {
 // included. The commit's parent is HEAD, so it is never reachable from any
 // local branch.
 func Create(ctx context.Context, message string) (string, error) {
+	return CreateWithFiles(ctx, message, nil)
+}
+
+// CreateWithFiles is Create plus generated files that exist only in the
+// snapshot commit: never in the working tree, and added whatever .gitignore
+// says. Keys are slash-separated paths relative to the repository root.
+func CreateWithFiles(ctx context.Context, message string, files map[string][]byte) (string, error) {
 	dir, err := os.MkdirTemp("", "ios-builder-index")
 	if err != nil {
 		return "", fmt.Errorf("failed to create temporary index: %w", err)
@@ -86,6 +95,27 @@ func Create(ctx context.Context, message string) (string, error) {
 	}
 	if _, err := git(ctx, index, "add", "-A"); err != nil {
 		return "", err
+	}
+	paths := make([]string, 0, len(files))
+	for name := range files {
+		paths = append(paths, name)
+	}
+	sort.Strings(paths)
+	for number, name := range paths {
+		if name == "" || path.IsAbs(name) || path.Clean(name) != name || strings.HasPrefix(name, "../") || strings.Contains(name, "\\") {
+			return "", fmt.Errorf("generated snapshot file %q is not a clean relative path", name)
+		}
+		blobPath := filepath.Join(dir, fmt.Sprintf("blob-%d", number))
+		if err := os.WriteFile(blobPath, files[name], 0600); err != nil {
+			return "", fmt.Errorf("failed to stage generated snapshot file: %w", err)
+		}
+		blob, err := git(ctx, index, "hash-object", "-w", "--", blobPath)
+		if err != nil {
+			return "", err
+		}
+		if _, err := git(ctx, index, "update-index", "--add", "--cacheinfo", "100644,"+blob+","+name); err != nil {
+			return "", err
+		}
 	}
 
 	tree, err := git(ctx, index, "write-tree")

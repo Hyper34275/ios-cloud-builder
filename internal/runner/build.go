@@ -153,6 +153,13 @@ func buildUnsigned(ctx context.Context, options *BuildOptions, privateLog io.Wri
 	if err := VerifyCheckoutNoCredentials(sourceRoot); err != nil {
 		return err
 	}
+	// Read before any project code runs, so a build script cannot swap it.
+	var dartDefines []string
+	if options.Framework == FrameworkFlutter {
+		if dartDefines, err = readDartDefines(sourceRoot); err != nil {
+			return err
+		}
+	}
 	privateHome := filepath.Join(filepath.Dir(options.LogPath), ".build-home")
 	_ = os.RemoveAll(privateHome)
 	if err := os.Mkdir(privateHome, 0700); err != nil {
@@ -208,7 +215,7 @@ func buildUnsigned(ctx context.Context, options *BuildOptions, privateLog io.Wri
 		if options.Configuration == "Debug" {
 			mode = "--debug"
 		}
-		if err := run.run(flutterRoot, "flutter", "build", "ios", mode, "--no-codesign"); err != nil {
+		if err := run.run(flutterRoot, "flutter", flutterBuildArgs(mode, dartDefines)...); err != nil {
 			return err
 		}
 		appPath, err = findApp(filepath.Join(flutterRoot, "build", "ios", "iphoneos"))

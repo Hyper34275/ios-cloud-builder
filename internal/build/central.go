@@ -6,6 +6,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -229,7 +230,11 @@ func (c *Coordinator) awaitCentralRun(ctx context.Context, remote, buildID strin
 		return nil, err
 	}
 	c.progress.Update(PhaseSnapshot, "Snapshotting working tree...")
-	sha, err := snapshot.Create(ctx, fmt.Sprintf("ios-builder snapshot %s", buildID))
+	files, err := centralSnapshotFiles(c.config)
+	if err != nil {
+		return nil, err
+	}
+	sha, err := snapshot.CreateWithFiles(ctx, fmt.Sprintf("ios-builder snapshot %s", buildID), files)
 	if err != nil {
 		c.progress.Error(PhaseSnapshot, err)
 		return nil, fmt.Errorf("failed to snapshot working tree: %w", err)
@@ -481,6 +486,24 @@ func decryptInstallerIdentity(identity age.Identity, ciphertext []byte, outputDi
 		return "", fmt.Errorf("save Mac installer identity: %w", err)
 	}
 	return path, nil
+}
+
+// DartDefinesSnapshotPath is where the central runner reads flutter
+// --dart-define values. They travel inside the private snapshot because a
+// workflow input would print them in the public Actions log.
+const DartDefinesSnapshotPath = ".ios-builder/dart-defines.json"
+
+// centralSnapshotFiles returns the generated files a central snapshot carries
+// in addition to the working tree.
+func centralSnapshotFiles(cfg *config.Config) (map[string][]byte, error) {
+	if len(cfg.Flutter.DartDefines) == 0 {
+		return nil, nil
+	}
+	data, err := json.Marshal(cfg.Flutter.DartDefines)
+	if err != nil {
+		return nil, fmt.Errorf("encode flutter.dartDefines: %w", err)
+	}
+	return map[string][]byte{DartDefinesSnapshotPath: data}, nil
 }
 
 func frameworkHint(cfg *config.Config) string {

@@ -17,6 +17,17 @@ var (
 	schemePattern     = regexp.MustCompile(`^$|^[A-Za-z0-9][A-Za-z0-9 ._+()-]{0,127}$`)
 	// testScriptSegmentPattern must match the central runner's rule exactly.
 	testScriptSegmentPattern = regexp.MustCompile(`^[A-Za-z0-9._+][A-Za-z0-9._+-]*$`)
+	// dartDefineKeyPattern matches valid Dart identifier-like constant names,
+	// which is what flutter --dart-define KEY=VALUE accepts as a key.
+	dartDefineKeyPattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]{0,127}$`)
+)
+
+const (
+	// maxDartDefines bounds the number of flutter.dartDefines entries so the
+	// snapshot file the runner reads stays bounded.
+	maxDartDefines = 32
+	// maxDartDefineValueLen bounds each dart-define value in bytes.
+	maxDartDefineValueLen = 2048
 )
 
 // MaxTestScriptPathLength is the longest test script path the central
@@ -142,6 +153,14 @@ type WindowsConfig struct {
 type FlutterConfig struct {
 	Version string      `json:"version,omitempty"` // Pinned Flutter version (e.g., "3.24.0")
 	Watch   WatchConfig `json:"watch,omitempty"`   // File watcher settings for hot reload
+	// DartDefines are passed as --dart-define KEY=VALUE flags to
+	// `flutter build ios`, letting any Flutter project inject build-time
+	// constants (backend URLs, feature flags, ...) without hardcoding them
+	// into Dart source. The central backend ships them inside the private
+	// snapshot, never as a workflow input, so they stay out of public logs.
+	// Keys must be valid Dart identifiers; values must be non-empty and free
+	// of control characters.
+	DartDefines map[string]string `json:"dartDefines,omitempty"`
 }
 
 // WatchConfig holds file watcher settings for hot reload
@@ -318,6 +337,9 @@ func (c *Config) Validate() error {
 			return &ValidationError{Field: "macos.app", Message: "must name an application bundle ending in .app"}
 		}
 	}
+	if !validDartDefines(c.Flutter.DartDefines) {
+		return &ValidationError{Field: "flutter.dartDefines", Message: "keys must be valid identifiers, values must be non-empty and under 2048 bytes with no control characters, and there must be at most 32 entries"}
+	}
 	if c.Windows.Artifact != "" {
 		if err := ValidateArtifactPath(c.Windows.Artifact); err != nil {
 			return &ValidationError{Field: "windows.artifact", Message: err.Error()}
@@ -384,6 +406,35 @@ func validateSnapshotFilePath(value string, maxLength int, example string) error
 		return errors.New("must be a clean path without ./, // or a trailing /")
 	}
 	return nil
+}
+
+// validDartDefines enforces the constraints that keep flutter.dartDefines
+// safe to ship in the snapshot and to pass as discrete argv elements to
+// `flutter build ios` on the runner.
+func validDartDefines(defines map[string]string) bool {
+	if len(defines) > maxDartDefines {
+		return false
+	}
+	for key, value := range defines {
+		if !dartDefineKeyPattern.MatchString(key) {
+			return false
+		}
+		if value == "" || len(value) > maxDartDefineValueLen || hasControlChars(value) {
+			return false
+		}
+	}
+	return true
+}
+
+// hasControlChars reports whether s contains any ASCII control character,
+// including NUL, CR, and LF.
+func hasControlChars(s string) bool {
+	for _, r := range s {
+		if r < 0x20 || r == 0x7f {
+			return true
+		}
+	}
+	return false
 }
 
 func validOwner(value string) bool {
