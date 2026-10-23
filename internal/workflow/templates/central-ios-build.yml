@@ -92,6 +92,14 @@ on:
         options:
           - '26.3'
           - '27.1'
+      platform:
+        description: ios, or macos for a Mac App Store testflight operation whose test_script builds the application at artifact_path
+        required: false
+        default: ios
+        type: choice
+        options:
+          - ios
+          - macos
 
 permissions:
   contents: read
@@ -139,6 +147,7 @@ jobs:
           ARTIFACT_PATH: ${{ inputs.artifact_path }}
           TEST_IMAGE: ${{ inputs.test_image }}
           BUILD_XCODE: ${{ inputs.build_xcode }}
+          PLATFORM: ${{ inputs.platform }}
         run: |
           "$RUNNER_TEMP/builder-runner" validate-inputs \
             --build-id "$BUILD_ID" \
@@ -154,7 +163,8 @@ jobs:
             --test-script "$TEST_SCRIPT" \
             --artifact-path "$ARTIFACT_PATH" \
             --test-image "$TEST_IMAGE" \
-            --build-xcode "$BUILD_XCODE"
+            --build-xcode "$BUILD_XCODE" \
+            --platform "$PLATFORM"
 
       - name: Create repository-scoped GitHub App token
         id: source-token
@@ -298,9 +308,25 @@ jobs:
           FRAMEWORK: ${{ steps.detect.outputs.framework }}
           ARTIFACT_RECIPIENT: ${{ inputs.artifact_recipient }}
           IPA_RECIPIENT: ${{ inputs.operation == 'testflight' && vars.APPLE_SIGNING_RECIPIENT || inputs.artifact_recipient }}
+          PLATFORM: ${{ inputs.platform }}
+          TEST_SCRIPT: ${{ inputs.test_script }}
+          ARTIFACT_PATH: ${{ inputs.artifact_path }}
           CODE_SIGNING_ALLOWED: 'NO'
           CODE_SIGNING_REQUIRED: 'NO'
         run: |
+          if [ "$PLATFORM" = macos ]; then
+            "$RUNNER_TEMP/builder-runner" execute-macos \
+              --source "$GITHUB_WORKSPACE/source" \
+              --script "$TEST_SCRIPT" \
+              --app "$ARTIFACT_PATH" \
+              --log "$RUNNER_TEMP/private-output/build.log" \
+              --ipa "$RUNNER_TEMP/private-output/App.ipa" \
+              --timeout 40m \
+              --recipient "$ARTIFACT_RECIPIENT" \
+              --ipa-recipient "$IPA_RECIPIENT" \
+              --output "$RUNNER_TEMP/encrypted"
+            exit
+          fi
           "$RUNNER_TEMP/builder-runner" execute \
             --source "$GITHUB_WORKSPACE/source" \
             --ios-path "$IOS_PATH" \
@@ -390,6 +416,9 @@ jobs:
           ASC_API_KEY_P8: ${{ secrets.ASC_API_KEY_P8 }}
           ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
           ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+          MAC_INSTALLER_P12: ${{ secrets.MAC_INSTALLER_P12 }}
+          MAC_INSTALLER_P12_PASSWORD: ${{ secrets.MAC_INSTALLER_P12_PASSWORD }}
+          PLATFORM: ${{ inputs.platform }}
           ARTIFACT_RECIPIENT: ${{ inputs.artifact_recipient }}
           TESTFLIGHT_BUILD_NUMBER: ${{ needs.build.outputs.build_number }}.${{ github.run_attempt }}
         run: |
@@ -397,6 +426,7 @@ jobs:
             --encrypted-ipa "$RUNNER_TEMP/intermediate/App.ipa.age" \
             --log "$RUNNER_TEMP/deploy-private/build.log" \
             --build-number "$TESTFLIGHT_BUILD_NUMBER" \
+            --platform "$PLATFORM" \
             --recipient "$ARTIFACT_RECIPIENT" \
             --output "$RUNNER_TEMP/deploy-encrypted"
 
@@ -406,7 +436,9 @@ jobs:
         uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4
         with:
           name: ios-builder-deploy-${{ inputs.build_id }}
-          path: ${{ runner.temp }}/deploy-encrypted/build.log.age
+          path: |
+            ${{ runner.temp }}/deploy-encrypted/build.log.age
+            ${{ runner.temp }}/deploy-encrypted/mac-installer-identity.json.age
           if-no-files-found: error
           retention-days: 1
           include-hidden-files: false
@@ -468,6 +500,7 @@ jobs:
           ARTIFACT_PATH: ${{ inputs.artifact_path }}
           TEST_IMAGE: ${{ inputs.test_image }}
           BUILD_XCODE: ${{ inputs.build_xcode }}
+          PLATFORM: ${{ inputs.platform }}
         run: |
           "$RUNNER_TEMP/builder-runner" validate-inputs \
             --build-id "$BUILD_ID" \
@@ -483,7 +516,8 @@ jobs:
             --test-script "$TEST_SCRIPT" \
             --artifact-path "$ARTIFACT_PATH" \
             --test-image "$TEST_IMAGE" \
-            --build-xcode "$BUILD_XCODE"
+            --build-xcode "$BUILD_XCODE" \
+            --platform "$PLATFORM"
 
       - name: Create repository-scoped GitHub App token
         id: source-token
@@ -650,6 +684,7 @@ jobs:
           ARTIFACT_PATH: ${{ inputs.artifact_path }}
           TEST_IMAGE: ${{ inputs.test_image }}
           BUILD_XCODE: ${{ inputs.build_xcode }}
+          PLATFORM: ${{ inputs.platform }}
         run: |
           & "$env:RUNNER_TEMP\builder-runner.exe" validate-inputs `
             "--build-id=$env:BUILD_ID" `
@@ -665,7 +700,8 @@ jobs:
             "--test-script=$env:TEST_SCRIPT" `
             "--artifact-path=$env:ARTIFACT_PATH" `
             "--test-image=$env:TEST_IMAGE" `
-            "--build-xcode=$env:BUILD_XCODE"
+            "--build-xcode=$env:BUILD_XCODE" `
+            "--platform=$env:PLATFORM"
           exit $LASTEXITCODE
 
       - name: Create repository-scoped GitHub App token

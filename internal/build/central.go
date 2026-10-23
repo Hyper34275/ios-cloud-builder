@@ -32,6 +32,10 @@ const (
 	centralTestLogFile    = "test.log.age"
 	centralReportFile     = "report.md.age"
 	centralArtifactFile   = "artifact.age"
+	// centralInstallerFile is a Mac installer identity created by a macOS
+	// deployment, encrypted to the caller like the diagnostic log.
+	centralInstallerFile = "mac-installer-identity.json.age"
+	maxInstallerSize     = int64(1024 * 1024)
 
 	maxArtifactArchiveSize = int64(1024*1024*1024 + 80*1024*1024)
 	maxIPACiphertextSize   = int64(1024 * 1024 * 1024)
@@ -45,8 +49,9 @@ const (
 )
 
 type encryptedArtifact struct {
-	ipa []byte
-	log []byte
+	ipa       []byte
+	log       []byte
+	installer []byte
 }
 
 // Diagnostics are the decrypted files retrieved for one central run.
@@ -83,6 +88,11 @@ func (c *Coordinator) buildCentral(parent context.Context, opts BuildOptions) (*
 
 	owner, repo := c.config.Builder.Owner, c.config.Builder.Repo
 	inputs := centralDispatchInputs(c.config, buildID, snapshot.Ref(buildID), opts.TestFlight, opts.Xcode)
+	if opts.MacOS {
+		if err := addMacOSDispatchInputs(inputs, c.config, opts.TestFlight); err != nil {
+			return result, err
+		}
+	}
 	running := "Building securely on the central runner..."
 	if opts.Xcode == config.BuildXcode271 {
 		running = "Building securely on the central runner (Xcode 27.1, xcode-27 image)..."
@@ -124,6 +134,16 @@ func (c *Coordinator) buildCentral(parent context.Context, opts BuildOptions) (*
 		return result, err
 	}
 
+	installerNote := ""
+	if len(contents.installer) != 0 {
+		installerPath, installerErr := decryptInstallerIdentity(identity, contents.installer, opts.OutputDir, buildID)
+		if installerErr != nil {
+			return result, fmt.Errorf("decrypt created Mac installer identity: %w", installerErr)
+		}
+		result.InstallerIdentityPath = installerPath
+		installerNote = "; a new Mac installer identity was saved to " + installerPath
+	}
+
 	if run.Conclusion != "success" {
 		logPath, logErr := decryptLogToFile(identity, contents.log, opts.OutputDir, buildID)
 		if logErr != nil {
@@ -137,7 +157,7 @@ func (c *Coordinator) buildCentral(parent context.Context, opts BuildOptions) (*
 		if opts.TestFlight {
 			kind = "TestFlight deployment"
 		}
-		return result, fmt.Errorf("%s failed with conclusion %s; decrypted diagnostics: %s", kind, run.Conclusion, logPath)
+		return result, fmt.Errorf("%s failed with conclusion %s; decrypted diagnostics: %s%s", kind, run.Conclusion, logPath, installerNote)
 	}
 	if opts.TestFlight {
 		result.Duration = time.Since(started)
@@ -321,8 +341,9 @@ func saveDiagnostics(identity age.Identity, archive *zip.Reader, outputDir, buil
 		return &saved.Diagnostics, nil
 	}
 	members, err := ciphertextMembers(archive, map[string]int64{
-		centralIPAFile: maxIPACiphertextSize,
-		centralLogFile: maxLogCiphertextSize,
+		centralIPAFile:       maxIPACiphertextSize,
+		centralLogFile:       maxLogCiphertextSize,
+		centralInstallerFile: maxInstallerSize,
 	}, centralLogFile)
 	if err != nil {
 		return nil, err
@@ -399,6 +420,36 @@ func centralDispatchInputs(cfg *config.Config, buildID, ref string, testFlight b
 	return inputs
 }
 
+// addMacOSDispatchInputs turns a TestFlight dispatch into a Mac App Store
+// deployment of the application builder.json's macos section describes: the
+// build job runs macos.buildScript and packages macos.app.
+func addMacOSDispatchInputs(inputs map[string]string, cfg *config.Config, testFlight bool) error {
+	if !testFlight {
+		return errors.New("a macOS build is available only as a Mac App Store deployment")
+	}
+	if cfg.MacOS.BuildScript == "" || cfg.MacOS.App == "" {
+		return errors.New("builder.json needs macos.buildScript and macos.app for a macOS deployment")
+	}
+	inputs["platform"] = "macos"
+	inputs["test_script"] = cfg.MacOS.BuildScript
+	inputs["artifact_path"] = cfg.MacOS.App
+	return nil
+}
+
+// decryptInstallerIdentity saves a created Mac installer identity, a small
+// JSON document holding a PKCS#12 file and its password, privately.
+func decryptInstallerIdentity(identity age.Identity, ciphertext []byte, outputDir, buildID string) (string, error) {
+	plaintext, err := decryptBounded(identity, ciphertext, maxInstallerSize)
+	if err != nil {
+		return "", err
+	}
+	path := filepath.Join(outputDir, centralOutputName("mac-installer-identity", buildID, ".json"))
+	if err := atomicWritePrivate(path, plaintext); err != nil {
+		return "", fmt.Errorf("save Mac installer identity: %w", err)
+	}
+	return path, nil
+}
+
 func frameworkHint(cfg *config.Config) string {
 	switch {
 	case cfg.ReactNative.Expo:
@@ -466,13 +517,17 @@ func verifyArtifactDigestSum(digest string, actual []byte) error {
 
 func parseEncryptedArtifact(data []byte) (*encryptedArtifact, error) {
 	members, err := parseCiphertextArtifact(data, map[string]int64{
-		centralIPAFile: maxIPACiphertextSize,
-		centralLogFile: maxLogCiphertextSize,
+		centralIPAFile:       maxIPACiphertextSize,
+		centralLogFile:       maxLogCiphertextSize,
+		centralInstallerFile: maxInstallerSize,
 	}, centralLogFile)
 	if err != nil {
 		return nil, err
 	}
-	return &encryptedArtifact{ipa: members[centralIPAFile], log: members[centralLogFile]}, nil
+	if members[centralIPAFile] != nil && members[centralInstallerFile] != nil {
+		return nil, errors.New("artifact ZIP mixes an IPA with a Mac installer identity")
+	}
+	return &encryptedArtifact{ipa: members[centralIPAFile], log: members[centralLogFile], installer: members[centralInstallerFile]}, nil
 }
 
 // parseCiphertextArtifact reads an artifact ZIP that may contain only the

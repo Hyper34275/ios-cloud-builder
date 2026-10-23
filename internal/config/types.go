@@ -110,6 +110,20 @@ type Config struct {
 	// Windows is omitted when empty, so saving a configuration never adds a
 	// section its project does not use.
 	Windows WindowsConfig `json:"windows,omitzero"`
+	// MacOS is omitted when empty, like Windows.
+	MacOS MacOSConfig `json:"macos,omitzero"`
+}
+
+// MacOSConfig holds what `builder macos deploy` needs to deploy a macOS
+// application to the Mac App Store through the central builder.
+type MacOSConfig struct {
+	// BuildScript builds the application on the central macOS runner,
+	// relative to the repository root (e.g. "scripts/build-app-store.sh"). It
+	// must sign the bundle ad hoc with the application's sandbox entitlements.
+	BuildScript string `json:"buildScript,omitempty"`
+	// App is the application bundle the script leaves behind, relative to the
+	// repository root (e.g. "dist/App.app").
+	App string `json:"app,omitempty"`
 }
 
 // WindowsConfig holds the defaults of `builder windows test`, which runs a
@@ -289,6 +303,19 @@ func (c *Config) Validate() error {
 	if c.Windows.TestScript != "" {
 		if err := ValidateWindowsTestScriptPath(c.Windows.TestScript); err != nil {
 			return &ValidationError{Field: "windows.testScript", Message: err.Error()}
+		}
+	}
+	if c.MacOS.BuildScript != "" {
+		if err := ValidateTestScriptPath(c.MacOS.BuildScript); err != nil {
+			return &ValidationError{Field: "macos.buildScript", Message: err.Error()}
+		}
+	}
+	if c.MacOS.App != "" {
+		if err := ValidateArtifactPath(c.MacOS.App); err != nil {
+			return &ValidationError{Field: "macos.app", Message: err.Error()}
+		}
+		if path.Ext(c.MacOS.App) != ".app" || path.Base(c.MacOS.App) == ".app" {
+			return &ValidationError{Field: "macos.app", Message: "must name an application bundle ending in .app"}
 		}
 	}
 	if c.Windows.Artifact != "" {

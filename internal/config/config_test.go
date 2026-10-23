@@ -495,3 +495,24 @@ func TestManager_WindowsSectionIsBackwardsCompatible(t *testing.T) {
 		t.Fatalf("saved builder.json = %s, %v", data, err)
 	}
 }
+
+func TestValidateMacOSConfig(t *testing.T) {
+	valid := Config{
+		Project: "App", GitHub: GitHubConfig{Owner: "owner", Repo: "repo"},
+		MacOS: MacOSConfig{BuildScript: "scripts/build-app-store.sh", App: "dist/App.app"},
+	}
+	if err := valid.Validate(); err != nil {
+		t.Fatalf("valid macOS configuration rejected: %v", err)
+	}
+	for name, macOS := range map[string]MacOSConfig{
+		"traversing script": {BuildScript: "../build.sh", App: "dist/App.app"},
+		"not a bundle":      {BuildScript: "build.sh", App: "dist/App.zip"},
+		"absolute bundle":   {BuildScript: "build.sh", App: "/tmp/App.app"},
+	} {
+		cfg := valid
+		cfg.MacOS = macOS
+		if err := cfg.Validate(); err == nil {
+			t.Errorf("%s accepted", name)
+		}
+	}
+}

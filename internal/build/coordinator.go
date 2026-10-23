@@ -95,9 +95,13 @@ func selectExecutionBackend(coordinator *Coordinator) Backend {
 type BuildOptions struct {
 	OutputDir  string
 	Timeout    time.Duration
-	Unsigned   bool   // Skip code signing even if configured
-	TestFlight bool   // Sign and upload through the protected central environment
-	Remote     string // Git remote to push the working-tree snapshot to
+	Unsigned   bool // Skip code signing even if configured
+	TestFlight bool // Sign and upload through the protected central environment
+	// MacOS deploys the macOS application of builder.json's macos section to
+	// the Mac App Store instead of an iOS application to TestFlight. It
+	// requires TestFlight.
+	MacOS  bool
+	Remote string // Git remote to push the working-tree snapshot to
 	// Xcode is the toolchain of a central build: config.BuildXcode263 (the
 	// default, also when empty) or config.BuildXcode271, which runs the build on
 	// the xcode-27 image. The repository backend takes none.
@@ -113,6 +117,9 @@ type BuildResult struct {
 	WorkflowURL string
 	IPASize     int64
 	TestFlight  bool
+	// InstallerIdentityPath is where a Mac installer identity the deployment
+	// created was decrypted to, for storage in the protected Environment.
+	InstallerIdentityPath string
 }
 
 // Build triggers a remote build and downloads the IPA artifact

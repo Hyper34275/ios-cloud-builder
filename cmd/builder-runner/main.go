@@ -36,6 +36,8 @@ func run(args []string) error {
 		return verifyCheckout(args[1:])
 	case "execute":
 		return execute(args[1:])
+	case "execute-macos":
+		return executeMacOS(args[1:])
 	case "execute-tests":
 		return executeTests(args[1:])
 	case "deploy-testflight":
@@ -52,12 +54,17 @@ func deployTestFlight(args []string) error {
 	flags.StringVar(&options.EncryptedIPAPath, "encrypted-ipa", "", "")
 	flags.StringVar(&options.LogPath, "log", "", "")
 	flags.StringVar(&options.BuildNumber, "build-number", "", "")
+	flags.StringVar(&options.Platform, "platform", runner.PlatformIOS, "")
 	flags.StringVar(&recipient, "recipient", "", "")
 	flags.StringVar(&outputDir, "output", "", "")
 	if err := flags.Parse(args); err != nil || flags.NArg() != 0 {
 		return fmt.Errorf("invalid TestFlight deployment arguments")
 	}
-	fmt.Println("Signing and uploading iOS application; detailed output is private")
+	if options.Platform == runner.PlatformMacOS {
+		fmt.Println("Signing and uploading macOS application; detailed output is private")
+	} else {
+		fmt.Println("Signing and uploading iOS application; detailed output is private")
+	}
 	if err := runner.ExecuteTestFlight(context.Background(), &options, recipient, outputDir); err != nil {
 		if err == runner.ErrDeployFailed {
 			return runner.ErrDeployFailed
@@ -91,6 +98,7 @@ func validateInputs(args []string) error {
 	flags.StringVar(&in.ArtifactPath, "artifact-path", "", "")
 	flags.StringVar(&in.TestImage, "test-image", "", "")
 	flags.StringVar(&in.BuildXcode, "build-xcode", "", "")
+	flags.StringVar(&in.Platform, "platform", "", "")
 	if err := flags.Parse(args); err != nil || flags.NArg() != 0 {
 		return fmt.Errorf("invalid validation arguments")
 	}
@@ -166,6 +174,40 @@ func execute(args []string) error {
 	}
 	fmt.Println("Building iOS application; detailed output is private")
 	if err := runner.ExecuteSecureWithIPARecipient(context.Background(), &options, recipient, ipaRecipient, outputDir); err != nil {
+		if err == runner.ErrBuildFailed {
+			return runner.ErrBuildFailed
+		}
+		return fmt.Errorf("secure build artifact preparation failed")
+	}
+	fmt.Println("Build succeeded; encrypted artifacts are ready")
+	return nil
+}
+
+// executeMacOS runs the project's macOS build script for a Mac App Store
+// deployment and encrypts its private log for the caller and the application
+// it built for the protected signing job. Only fixed lines reach the public
+// job log.
+func executeMacOS(args []string) error {
+	flags := newFlags("execute-macos")
+	var options runner.MacOSBuildOptions
+	var recipient, ipaRecipient, outputDir string
+	flags.StringVar(&options.SourceRoot, "source", "", "")
+	flags.StringVar(&options.Script, "script", "", "")
+	flags.StringVar(&options.App, "app", "", "")
+	flags.StringVar(&options.LogPath, "log", "", "")
+	flags.StringVar(&options.IPAPath, "ipa", "", "")
+	flags.DurationVar(&options.Timeout, "timeout", 0, "")
+	flags.StringVar(&recipient, "recipient", "", "")
+	flags.StringVar(&ipaRecipient, "ipa-recipient", "", "")
+	flags.StringVar(&outputDir, "output", "", "")
+	if err := flags.Parse(args); err != nil || flags.NArg() != 0 {
+		return fmt.Errorf("invalid secure macOS build arguments")
+	}
+	if ipaRecipient == "" {
+		ipaRecipient = recipient
+	}
+	fmt.Println("Building macOS application; detailed output is private")
+	if err := runner.ExecuteMacOSBuildSecure(context.Background(), &options, recipient, ipaRecipient, outputDir); err != nil {
 		if err == runner.ErrBuildFailed {
 			return runner.ErrBuildFailed
 		}
