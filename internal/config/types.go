@@ -311,7 +311,7 @@ func (c *Config) Validate() error {
 		}
 	}
 	if c.MacOS.App != "" {
-		if err := validateSnapshotFilePath(c.MacOS.App, MaxArtifactPathLength, "dist/App.app"); err != nil {
+		if err := ValidateArtifactPath(c.MacOS.App); err != nil {
 			return &ValidationError{Field: "macos.app", Message: err.Error()}
 		}
 		if path.Ext(c.MacOS.App) != ".app" || path.Base(c.MacOS.App) == ".app" {
