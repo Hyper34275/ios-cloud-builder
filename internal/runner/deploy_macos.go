@@ -225,6 +225,9 @@ func deployMacAppStore(ctx context.Context, options *TestFlightOptions, credenti
 	if err != nil || os.WriteFile(entitlementsPath, encoded, 0600) != nil {
 		return fmt.Errorf("prepare signing entitlements")
 	}
+	if err := normalizeBundlePermissions(appPath); err != nil {
+		return err
+	}
 	application := signingTarget{path: appPath, entitlementsPath: entitlementsPath}
 	if err := signApplication(run, application, nil, signingIdentity, keychainPath); err != nil {
 		return err
@@ -275,6 +278,36 @@ func checkMacOSBundleLayout(appPath string) error {
 			if strings.HasSuffix(name, suffix) {
 				return fmt.Errorf("nested %s bundles in a macOS application are not supported", suffix)
 			}
+		}
+		return nil
+	})
+}
+
+// normalizeBundlePermissions makes every directory and file in the bundle
+// readable by everyone, keeping only the executable bits it already has.
+// Extraction and the embedded profile write private (0700/0600) modes, and
+// App Store Connect refuses an installer package holding files only root can
+// read, because macOS could not verify the signature for other users.
+func normalizeBundlePermissions(appPath string) error {
+	return filepath.WalkDir(appPath, func(current string, entry os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		info, err := entry.Info()
+		if err != nil {
+			return fmt.Errorf("inspect application file permissions")
+		}
+		mode := os.FileMode(0644)
+		switch {
+		case entry.IsDir():
+			mode = 0755
+		case !info.Mode().IsRegular():
+			return fmt.Errorf("the macOS application contains a special file")
+		case info.Mode().Perm()&0100 != 0:
+			mode = 0755
+		}
+		if err := os.Chmod(current, mode); err != nil {
+			return fmt.Errorf("set application file permissions")
 		}
 		return nil
 	})

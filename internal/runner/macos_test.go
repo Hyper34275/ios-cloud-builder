@@ -16,6 +16,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -529,4 +530,36 @@ func mustRSAKey(t *testing.T) *rsa.PrivateKey {
 func sha1Hex(data []byte) string {
 	sum := sha1.Sum(data) // #nosec G401 -- mirrors Apple's signing certificate fingerprint.
 	return hex.EncodeToString(sum[:])
+}
+
+func TestNormalizeBundlePermissions(t *testing.T) {
+	app := writeMacOSApp(t, t.TempDir())
+	profile := filepath.Join(app, "Contents", "embedded.provisionprofile")
+	if err := os.WriteFile(profile, []byte("profile"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(filepath.Join(app, "Contents", "MacOS"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(filepath.Join(app, "Contents", "MacOS", "App"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := normalizeBundlePermissions(app); err != nil {
+		t.Fatal(err)
+	}
+	for path, want := range map[string]os.FileMode{
+		profile: 0644,
+		filepath.Join(app, "Contents", "Info.plist"):   0644,
+		filepath.Join(app, "Contents", "MacOS"):        0755,
+		filepath.Join(app, "Contents", "MacOS", "App"): 0755,
+		app: 0755,
+	} {
+		info, err := os.Stat(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if runtime.GOOS != "windows" && info.Mode().Perm() != want {
+			t.Errorf("%s mode %v, want %v", path, info.Mode().Perm(), want)
+		}
+	}
 }
