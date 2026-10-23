@@ -17,6 +17,7 @@ import (
 	"filippo.io/age"
 	"github.com/MobAI-App/ios-builder/internal/config"
 	"github.com/MobAI-App/ios-builder/internal/github"
+	"github.com/MobAI-App/ios-builder/internal/snapshot"
 )
 
 func TestCentralDispatchInputs(t *testing.T) {
@@ -326,5 +327,29 @@ func TestSnapshotsGoOnlyToPrivateSourceRepositories(t *testing.T) {
 	}
 	if err := requirePrivateRepository(source, &github.Repository{Private: true}); err != nil {
 		t.Fatalf("private source repository: error = %v", err)
+	}
+}
+
+func TestDartDefinesTravelInTheSnapshotNotTheDispatch(t *testing.T) {
+	cfg := &config.Config{
+		GitHub:  config.GitHubConfig{Owner: "source-owner", Repo: "private-app"},
+		IOS:     config.IOSConfig{Path: "ios"},
+		Flutter: config.FlutterConfig{DartDefines: map[string]string{"API_URL": "https://api.example.com", "FLAG": "on"}},
+	}
+	inputs := centralDispatchInputs(cfg, finishBuildID, snapshot.Ref(finishBuildID), false, "")
+	for name, value := range inputs {
+		if strings.Contains(value, "api.example.com") || strings.Contains(strings.ToLower(name), "dart") {
+			t.Errorf("dispatch input %s=%q carries a dart-define; inputs are printed in the public log", name, value)
+		}
+	}
+	files, err := centralSnapshotFiles(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := string(files[DartDefinesSnapshotPath]); got != `{"API_URL":"https://api.example.com","FLAG":"on"}` {
+		t.Errorf("snapshot dart-defines file = %q", got)
+	}
+	if files, err := centralSnapshotFiles(&config.Config{}); err != nil || files != nil {
+		t.Errorf("no dart-defines must add no file, got %v, %v", files, err)
 	}
 }

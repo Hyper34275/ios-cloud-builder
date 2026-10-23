@@ -46,6 +46,32 @@ func TestCreateCapturesWorkingTreeWithoutTouchingRepo(t *testing.T) {
 	}
 }
 
+func TestCreateWithFilesAddsGeneratedFilesOnlyToTheSnapshot(t *testing.T) {
+	repo := initRepo(t)
+	statusBefore := run(t, repo, "status", "--porcelain")
+
+	sha, err := CreateWithFiles(context.Background(), "snapshot test", map[string][]byte{
+		".ios-builder/dart-defines.json": []byte(`{"API_URL":"https://api.example.com"}`),
+	})
+	if err != nil {
+		t.Fatalf("CreateWithFiles: %v", err)
+	}
+	if got := run(t, repo, "show", sha+":.ios-builder/dart-defines.json"); got != `{"API_URL":"https://api.example.com"}` {
+		t.Errorf("generated file = %q", got)
+	}
+	if _, err := os.Stat(filepath.Join(repo, ".ios-builder")); !os.IsNotExist(err) {
+		t.Errorf("generated file reached the working tree: %v", err)
+	}
+	if got := run(t, repo, "status", "--porcelain"); got != statusBefore {
+		t.Errorf("status = %q, want unchanged %q", got, statusBefore)
+	}
+	for _, bad := range []string{"", "/abs", "../out", "a/../b", `a\b`} {
+		if _, err := CreateWithFiles(context.Background(), "snapshot test", map[string][]byte{bad: []byte("x")}); err == nil {
+			t.Errorf("CreateWithFiles accepted path %q", bad)
+		}
+	}
+}
+
 func TestParseRepositoryURL(t *testing.T) {
 	tests := []struct {
 		url       string

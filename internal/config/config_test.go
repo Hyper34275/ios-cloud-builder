@@ -4,8 +4,11 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
+	"strings"
 	"testing"
 
 	"filippo.io/age"
@@ -261,6 +264,110 @@ func TestConfig_CentralValidation(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestConfig_DartDefinesRoundTrip(t *testing.T) {
+	cfg := &Config{
+		Project:  "App",
+		Platform: "ios",
+		GitHub:   GitHubConfig{Owner: "owner", Repo: "repo"},
+		Flutter: FlutterConfig{
+			DartDefines: map[string]string{
+				"API_URL":   "https://api.example.com",
+				"FEATURE_X": "true",
+			},
+		},
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("Validate() error = %v", err)
+	}
+
+	data, err := json.Marshal(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), `"dartDefines"`) {
+		t.Fatalf("marshaled config missing dartDefines: %s", data)
+	}
+
+	var roundTrip Config
+	if err := json.Unmarshal(data, &roundTrip); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(roundTrip.Flutter.DartDefines, cfg.Flutter.DartDefines) {
+		t.Fatalf("DartDefines = %#v, want %#v", roundTrip.Flutter.DartDefines, cfg.Flutter.DartDefines)
+	}
+
+	empty := &Config{Project: "App", Platform: "ios", GitHub: GitHubConfig{Owner: "owner", Repo: "repo"}}
+	data, err = json.Marshal(empty)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(data), "dartDefines") {
+		t.Fatalf("empty dartDefines should be omitted: %s", data)
+	}
+}
+
+func TestConfig_DartDefinesValidation(t *testing.T) {
+	base := Config{
+		Project:  "App",
+		Platform: "ios",
+		GitHub:   GitHubConfig{Owner: "owner", Repo: "repo"},
+	}
+	tests := []struct {
+		name    string
+		defines map[string]string
+	}{
+		{"key starts with digit", map[string]string{"1KEY": "value"}},
+		{"key contains dash", map[string]string{"MY-KEY": "value"}},
+		{"key contains space", map[string]string{"MY KEY": "value"}},
+		{"key contains dot", map[string]string{"MY.KEY": "value"}},
+		{"empty key", map[string]string{"": "value"}},
+		{"empty value", map[string]string{"KEY": ""}},
+		{"value with newline", map[string]string{"KEY": "line1\nline2"}},
+		{"value with carriage return", map[string]string{"KEY": "line1\rline2"}},
+		{"value with NUL", map[string]string{"KEY": "a\x00b"}},
+		{"oversized value", map[string]string{"KEY": strings.Repeat("a", 2049)}},
+		{"too many entries", makeDartDefines(33)},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := base
+			cfg.Flutter = FlutterConfig{DartDefines: tt.defines}
+			err := cfg.Validate()
+			valErr, ok := err.(*ValidationError)
+			if !ok {
+				t.Fatalf("Validate() error = %v (%T), want *ValidationError", err, err)
+			}
+			if valErr.Field != "flutter.dartDefines" {
+				t.Errorf("field = %q, want flutter.dartDefines", valErr.Field)
+			}
+		})
+	}
+
+	valid := base
+	valid.Flutter = FlutterConfig{DartDefines: map[string]string{
+		"API_URL":   "https://api.example.com",
+		"_INTERNAL": "1",
+		"maxLen":    strings.Repeat("a", 2048),
+	}}
+	if err := valid.Validate(); err != nil {
+		t.Fatalf("Validate() error = %v, want nil", err)
+	}
+
+	atLimit := base
+	atLimit.Flutter = FlutterConfig{DartDefines: makeDartDefines(maxDartDefines)}
+	if err := atLimit.Validate(); err != nil {
+		t.Fatalf("Validate() at max entries error = %v, want nil", err)
+	}
+}
+
+func makeDartDefines(n int) map[string]string {
+	m := make(map[string]string, n)
+	for i := 0; i < n; i++ {
+		m[fmt.Sprintf("KEY_%d", i)] = "value"
+	}
+	return m
 }
 
 func TestConfig_RepositoryModeDoesNotRequireCentralFields(t *testing.T) {

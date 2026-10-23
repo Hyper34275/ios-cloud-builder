@@ -475,6 +475,16 @@ Deleting runs and artifacts needs write access to the builder repository. The CL
 
 Schemes and workspaces/projects are detected where possible. The source build always passes `CODE_SIGNING_ALLOWED=NO` and packages the device `.app` as an unsigned IPA. In TestFlight mode, the separate protected job manually signs that app with the matching App Store provisioning profile from the protected multi-application bundle. App extensions in the app's `PlugIns` directory (widgets, Live Activities, share and notification extensions) and an embedded watch app in `Watch/*.app` (with any `PlugIns/*.appex` inside it) are signed too, each with its own App Store profile, discovered or created through App Store Connect exactly like the app's (a watch app's Bundle ID is registered as an `IOS` identifier with an `IOS_APP_STORE` profile), inside out: extensions, then the watch app, then the app. An embedded bundle's Bundle ID must extend its container's; a watch app's `WKCompanionAppBundleIdentifier` must equal the app's Bundle ID; and every embedded bundle's build number is set to the app's, with the watch app and its extensions also taking the app's `CFBundleShortVersionString`. At most one watch app and 16 extensions per container are accepted. App Clips, XPC services, ExtensionKit extensions, and bundles nested deeper than a watch app's extensions still require provisioning this job does not perform and are rejected rather than partially signed.
 
+### Flutter `--dart-define` values
+
+List build-time constants in `builder.json`:
+
+```json
+"flutter": { "dartDefines": { "API_URL": "https://api.example.com", "FEATURE_X": "on" } }
+```
+
+The central backend never sends them as a workflow input, because inputs are printed in the public Actions log. The CLI writes them to `.ios-builder/dart-defines.json` inside the private snapshot commit only; that file never touches your working tree and is added even if `.gitignore` would exclude it. The runner reads it before any project code runs and passes one `--dart-define=KEY=VALUE` per entry to `flutter build ios`. Keys must be Dart identifiers. Each value must be non-empty, at most 2048 bytes and free of control characters, and there may be at most 32 entries. The values are compiled into the app, so anyone holding the IPA can read them; this keeps them out of public logs, not out of the binary.
+
 ## Repository backend and retained commands
 
 Set `"backend": "repository"` to retain the original behavior where workflows live in the application repository. This mode continues to support repository-local signing and simulator sharing.
