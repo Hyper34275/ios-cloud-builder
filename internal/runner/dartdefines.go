@@ -62,7 +62,7 @@ func readDartDefines(sourceRoot string) ([]string, error) {
 			return nil, fmt.Errorf("invalid dart-define key")
 		}
 		if value == "" || len(value) > maxDartDefineValueLen || containsControl(value) {
-			return nil, fmt.Errorf("invalid dart-define value for %s", key)
+			return nil, fmt.Errorf("invalid dart-define value")
 		}
 		pairs = append(pairs, key+"="+value)
 	}
