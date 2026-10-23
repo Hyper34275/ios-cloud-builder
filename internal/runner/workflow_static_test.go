@@ -701,3 +701,38 @@ func TestCentralWorkflowWindowsTestOperation(t *testing.T) {
 		t.Errorf("windows status step prints %q", writes)
 	}
 }
+
+func TestCentralWorkflowMacOSPlatform(t *testing.T) {
+	workflow := loadStaticWorkflow(t)
+	platform := workflow.On.WorkflowDispatch.Inputs["platform"]
+	if platform.Required || platform.Type != "choice" || platform.Default != "ios" || !reflect.DeepEqual(platform.Options, []string{"ios", "macos"}) {
+		t.Errorf("platform input = %+v, want an optional choice of ios and macos defaulting to ios", platform)
+	}
+	for _, name := range []string{"build", "test", "windows-test"} {
+		job := workflow.Jobs[name]
+		validate := job.Steps[stepIndex(&job, "Validate all dispatch inputs before credential creation")]
+		if validate.Env["PLATFORM"] != "${{ inputs.platform }}" || !strings.Contains(validate.Run, "--platform") {
+			t.Errorf("%s job does not validate platform before credential creation", name)
+		}
+	}
+	build := workflow.Jobs["build"]
+	step := build.Steps[stepIndex(&build, "Build unsigned IPA and encrypt private outputs")]
+	for _, required := range []string{
+		`if [ "$PLATFORM" = macos ]; then`, `"$RUNNER_TEMP/builder-runner" execute-macos`, `--script "$TEST_SCRIPT"`,
+		`--app "$ARTIFACT_PATH"`, `--ipa-recipient "$IPA_RECIPIENT"`, `"$RUNNER_TEMP/builder-runner" execute \`,
+	} {
+		if !strings.Contains(step.Run, required) {
+			t.Errorf("build step missing %q", required)
+		}
+	}
+	deploy := workflow.Jobs["sign-and-deploy"]
+	sign := deploy.Steps[stepIndex(&deploy, "Sign and upload directly to App Store Connect")]
+	if sign.Env["MAC_INSTALLER_P12"] != "${{ secrets.MAC_INSTALLER_P12 }}" || sign.Env["PLATFORM"] != "${{ inputs.platform }}" ||
+		!strings.Contains(sign.Run, `--platform "$PLATFORM"`) {
+		t.Errorf("signing step does not handle the macOS platform: %+v", sign)
+	}
+	upload := deploy.Steps[stepIndex(&deploy, "Upload encrypted deployment diagnostic only")]
+	if upload.With["path"] != "${{ runner.temp }}/deploy-encrypted/build.log.age\n${{ runner.temp }}/deploy-encrypted/mac-installer-identity.json.age\n" {
+		t.Errorf("deployment upload path = %q", upload.With["path"])
+	}
+}

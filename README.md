@@ -150,6 +150,8 @@ Configure these values in `apple-production`:
 | Environment secret | `ASC_API_KEY_P8` | complete `.p8` PEM or its base64 encoding |
 | Environment secret | `ASC_KEY_ID` | App Store Connect API key ID |
 | Environment secret | `ASC_ISSUER_ID` | App Store Connect issuer UUID for a Team key; omit for an Individual key |
+| Environment secret (macOS, optional) | `MAC_INSTALLER_P12` | base64-encoded Mac Installer Distribution `.p12`; created by the first `builder macos deploy` when absent |
+| Environment secret (macOS, optional) | `MAC_INSTALLER_P12_PASSWORD` | that `.p12`'s password |
 
 Prefer an Individual App Store Connect key belonging to a dedicated Developer
 user whose app access is restricted to the applications this builder may upload.
@@ -280,6 +282,44 @@ The build job's "Select Xcode for the build" step resolves `27.1` to `/Applicati
 The signing and upload job stays on `macos-15` with Xcode 26.3 in both cases. It only runs `codesign`, `security` and `altool`, none of which reads an SDK; the SDK and Xcode that built the app are recorded inside the IPA (`DTSDKName`, `DTXcode`, `DTXcodeBuild`) and App Store Connect checks them server-side. Keeping the job that holds the Apple credentials on the stable image also keeps it independent of the newer image.
 
 The choice is a strict allowlist, `26.3` or `27.1`, checked by the CLI, by the workflow's `build_xcode` choice input, and again by the trusted runner before any credential exists; the build job's `runs-on` is one of two literals picked by comparing the input, never the input's value. The default is not sent at all, so the CLI keeps working against a builder workflow that predates the input; `--xcode 27.1` needs a workflow that has it. It needs the central backend, and `builder ios test` has its own `--image` choice.
+
+## Mac App Store deployment
+
+`builder macos deploy` uploads a macOS application to App Store Connect through
+the same protected `apple-production` Environment. There is no fixed macOS build
+pipeline: builder.json names a script that builds the application and the bundle
+it leaves behind.
+
+```json
+"macos": {
+  "buildScript": "scripts/build-app-store.sh",
+  "app": "dist/App.app"
+}
+```
+
+The build job runs the script like a test script (`bash -- <script>` from the
+repository root, with the build job's scrubbed environment), so the script owns
+its compiler invocation, `Info.plist` and resources. It must sign the bundle ad
+hoc with the application's entitlements, for example
+`codesign --force --sign - --entitlements App.entitlements dist/App.app`; the
+signing job reads only the `com.apple.security.*` entitlements from that
+signature, requires `com.apple.security.app-sandbox`, and adds the application
+and team identifiers from the profile. Nested applications, extensions, XPC
+services, login items and bundles with symbolic links fail closed.
+
+The signing job signs the application with the existing Apple Distribution
+identity under a `MAC_APP_STORE` profile it discovers or creates through the
+App Store Connect API (so `ASC_ISSUER_ID` is required), builds an installer
+package with `productbuild`, signs it with the Mac Installer Distribution
+identity, validates it and uploads it with `altool -t macos`.
+
+The first deployment without `MAC_INSTALLER_P12` creates a Mac Installer
+Distribution certificate through the API and returns its `.p12` and password,
+encrypted to the caller, as `dist/mac-installer-identity-<build-id>.json`. Store
+the two fields as `MAC_INSTALLER_P12` and `MAC_INSTALLER_P12_PASSWORD` in
+`apple-production` and delete the file; later deployments reuse that identity.
+The workflow's `platform` input (`ios` by default) selects this path and is
+accepted only with operation `testflight`.
 
 ## Running tests
 

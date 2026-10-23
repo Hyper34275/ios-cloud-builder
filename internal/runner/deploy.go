@@ -48,6 +48,10 @@ type TestFlightOptions struct {
 	EncryptedIPAPath string
 	LogPath          string
 	BuildNumber      string
+	// Platform is PlatformIOS (also when empty) or PlatformMacOS, whose
+	// unsigned package holds a macOS application bundle to sign for the Mac
+	// App Store and upload as an installer package.
+	Platform string
 }
 
 type appleCredentials struct {
@@ -60,6 +64,11 @@ type appleCredentials struct {
 	apiKey      string
 	apiKeyID    string
 	issuerID    string
+	// The Mac Installer Distribution identity that signs a macOS installer
+	// package. Optional: without it a macOS deployment creates one through
+	// the App Store Connect API and returns it encrypted for storage.
+	installerP12         string
+	installerP12Password string
 }
 
 type provisioningProfile struct {
@@ -129,8 +138,13 @@ func ExecuteTestFlight(ctx context.Context, options *TestFlightOptions, recipien
 	}
 	credentials, credentialErr := takeAppleCredentials()
 	deployErr := credentialErr
+	var createdInstaller *macInstallerIdentity
 	if deployErr == nil {
-		deployErr = deployTestFlight(ctx, options, credentials, logFile)
+		if options.Platform == PlatformMacOS {
+			deployErr = deployMacAppStore(ctx, options, credentials, logFile, &createdInstaller)
+		} else {
+			deployErr = deployTestFlight(ctx, options, credentials, logFile)
+		}
 	}
 	if deployErr != nil {
 		_, _ = fmt.Fprintf(logFile, "\nDeployment failed: %v\n", deployErr)
@@ -139,6 +153,13 @@ func ExecuteTestFlight(ctx context.Context, options *TestFlightOptions, recipien
 	_ = logFile.Close()
 	if err := EncryptArtifacts(recipient, options.LogPath, "", encryptedDir); err != nil {
 		return fmt.Errorf("encrypt private deployment diagnostics")
+	}
+	// A created installer identity is returned even when the upload failed,
+	// so the certificate it holds is never wasted.
+	if createdInstaller != nil {
+		if err := encryptMacInstallerIdentity(recipient, createdInstaller, encryptedDir); err != nil {
+			return fmt.Errorf("encrypt created Mac installer identity")
+		}
 	}
 	if deployErr != nil {
 		return ErrDeployFailed
@@ -155,6 +176,9 @@ func (options *TestFlightOptions) validate() error {
 	}
 	if !buildPattern.MatchString(options.BuildNumber) {
 		return fmt.Errorf("invalid TestFlight build number")
+	}
+	if options.Platform != "" && options.Platform != PlatformIOS && options.Platform != PlatformMacOS {
+		return fmt.Errorf("invalid deployment platform")
 	}
 	return nil
 }
@@ -176,6 +200,9 @@ func takeAppleCredentials() (*appleCredentials, error) {
 		apiKey:      take("ASC_API_KEY_P8"),
 		apiKeyID:    take("ASC_KEY_ID"),
 		issuerID:    take("ASC_ISSUER_ID"),
+
+		installerP12:         take("MAC_INSTALLER_P12"),
+		installerP12Password: takeRaw("MAC_INSTALLER_P12_PASSWORD"),
 	}
 	if credentials.ageIdentity == "" || credentials.p12 == "" || credentials.p12Password == "" ||
 		(credentials.profile == "" && credentials.profiles == "" && credentials.issuerID == "") || credentials.teamID == "" ||
@@ -903,7 +930,12 @@ func setExportComplianceIfUnset(infoPath string) error {
 }
 
 func altoolArgs(operation, ipaPath string, credentials *appleCredentials) []string {
-	args := []string{"altool", operation, "-f", ipaPath, "-t", "ios", "--apiKey", credentials.apiKeyID}
+	return altoolPlatformArgs(operation, ipaPath, "ios", credentials)
+}
+
+// altoolPlatformArgs is altoolArgs for an altool platform type: ios or macos.
+func altoolPlatformArgs(operation, packagePath, platformType string, credentials *appleCredentials) []string {
+	args := []string{"altool", operation, "-f", packagePath, "-t", platformType, "--apiKey", credentials.apiKeyID}
 	if credentials.issuerID != "" {
 		args = append(args, "--apiIssuer", credentials.issuerID)
 	}

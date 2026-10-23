@@ -14,7 +14,40 @@ import (
 	"time"
 )
 
-const ascAppStoreProfileType = "IOS_APP_STORE"
+const (
+	ascAppStoreProfileType    = "IOS_APP_STORE"
+	ascMacAppStoreProfileType = "MAC_APP_STORE"
+)
+
+// provisioningPlatform is what differs between signing an iOS and a macOS
+// application for the App Store: the profile type, the identifier platforms
+// that can serve it, and the platform a missing identifier is registered for.
+type provisioningPlatform struct {
+	profileType      string
+	bundlePlatforms  []string
+	registerPlatform string
+}
+
+var (
+	iosProvisioning = provisioningPlatform{
+		profileType: ascAppStoreProfileType, bundlePlatforms: []string{"IOS", "UNIVERSAL"}, registerPlatform: "IOS",
+	}
+	// An explicit App ID registered in the Developer Portal is listed with
+	// platform IOS even when it also serves macOS, and a second identifier
+	// with the same string cannot be registered, so every platform is accepted.
+	macProvisioning = provisioningPlatform{
+		profileType: ascMacAppStoreProfileType, bundlePlatforms: []string{"MAC_OS", "IOS", "UNIVERSAL"}, registerPlatform: "MAC_OS",
+	}
+)
+
+func (platform provisioningPlatform) acceptsBundlePlatform(value string) bool {
+	for _, accepted := range platform.bundlePlatforms {
+		if value == accepted {
+			return true
+		}
+	}
+	return false
+}
 
 type ascProfileAttributes struct {
 	Name           string `json:"name"`
@@ -28,10 +61,16 @@ type ascProfileAttributes struct {
 // so a project can be signed without a provisioning profile ever having to
 // be manually fetched and stored as a secret.
 func downloadASCProvisioningProfiles(ctx context.Context, api *appStoreConnectClient, bundleID, destinationDir string) (string, []string, error) {
+	return downloadASCPlatformProfiles(ctx, api, iosProvisioning, bundleID, destinationDir)
+}
+
+// downloadASCPlatformProfiles is downloadASCProvisioningProfiles for one
+// platform's profile type.
+func downloadASCPlatformProfiles(ctx context.Context, api *appStoreConnectClient, platform provisioningPlatform, bundleID, destinationDir string) (string, []string, error) {
 	if api == nil || !bundleIDPattern.MatchString(bundleID) {
 		return "", nil, fmt.Errorf("invalid App Store Connect provisioning metadata")
 	}
-	bundleResourceID, err := findASCBundleID(ctx, api, bundleID)
+	bundleResourceID, err := findASCPlatformBundleID(ctx, api, platform, bundleID)
 	if err != nil {
 		return "", nil, err
 	}
@@ -50,10 +89,10 @@ func downloadASCProvisioningProfiles(ctx context.Context, api *appStoreConnectCl
 		if resource.Type != "profiles" || json.Unmarshal(resource.Attributes, &attributes) != nil {
 			return "", nil, fmt.Errorf("parse App Store Connect provisioning profile")
 		}
-		if attributes.ProfileType != ascAppStoreProfileType || attributes.ProfileState != "ACTIVE" {
+		if attributes.ProfileType != platform.profileType || attributes.ProfileState != "ACTIVE" {
 			continue
 		}
-		profilePath := filepath.Join(destinationDir, fmt.Sprintf("profile-asc-%03d.mobileprovision", index))
+		profilePath := filepath.Join(destinationDir, fmt.Sprintf("profile-asc-%03d%s", index, platform.profileExtension()))
 		if err := writeASCProfileContent(attributes.ProfileContent, profilePath); err != nil {
 			return "", nil, err
 		}
@@ -67,6 +106,10 @@ func downloadASCProvisioningProfiles(ctx context.Context, api *appStoreConnectCl
 // is backed by one of these regardless of whether it was created from the
 // Developer Portal, from "New App" in App Store Connect, or here.
 func findASCBundleID(ctx context.Context, api *appStoreConnectClient, bundleID string) (string, error) {
+	return findASCPlatformBundleID(ctx, api, iosProvisioning, bundleID)
+}
+
+func findASCPlatformBundleID(ctx context.Context, api *appStoreConnectClient, platform provisioningPlatform, bundleID string) (string, error) {
 	query := url.Values{
 		"filter[identifier]": {bundleID},
 		"fields[bundleIds]":  {"identifier,platform"},
@@ -85,7 +128,7 @@ func findASCBundleID(ctx context.Context, api *appStoreConnectClient, bundleID s
 		if resource.Type != "bundleIds" || json.Unmarshal(resource.Attributes, &attributes) != nil {
 			return "", fmt.Errorf("parse App Store Connect bundle identifier")
 		}
-		if attributes.Identifier == bundleID && (attributes.Platform == "IOS" || attributes.Platform == "UNIVERSAL") {
+		if attributes.Identifier == bundleID && platform.acceptsBundlePlatform(attributes.Platform) {
 			if exact != "" {
 				return "", fmt.Errorf("multiple App Store Connect bundle identifiers matched exactly")
 			}
@@ -95,20 +138,20 @@ func findASCBundleID(ctx context.Context, api *appStoreConnectClient, bundleID s
 	if exact != "" {
 		return exact, nil
 	}
-	return createASCBundleID(ctx, api, bundleID)
+	return createASCBundleID(ctx, api, platform, bundleID)
 }
 
 // createASCBundleID registers bundleID as a plain Identifier with no extra
 // capabilities. A project needing push notifications, Sign in with Apple, or
 // any other capability must register its own Identifier in the Developer
 // Portal first; this only covers the common case of a bare application ID.
-func createASCBundleID(ctx context.Context, api *appStoreConnectClient, bundleID string) (string, error) {
+func createASCBundleID(ctx context.Context, api *appStoreConnectClient, platform provisioningPlatform, bundleID string) (string, error) {
 	body := map[string]any{"data": map[string]any{
 		"type": "bundleIds",
 		"attributes": map[string]any{
 			"identifier": bundleID,
 			"name":       ascBundleIDName(bundleID),
-			"platform":   "IOS",
+			"platform":   platform.registerPlatform,
 		},
 	}}
 	var response ascSingleResponse
@@ -135,6 +178,10 @@ func ascBundleIDName(bundleID string) string {
 }
 
 func createASCProvisioningProfile(ctx context.Context, api *appStoreConnectClient, bundleResourceID, bundleID, identityFingerprint, destinationDir string) (string, error) {
+	return createASCPlatformProfile(ctx, api, iosProvisioning, bundleResourceID, bundleID, identityFingerprint, destinationDir)
+}
+
+func createASCPlatformProfile(ctx context.Context, api *appStoreConnectClient, platform provisioningPlatform, bundleResourceID, bundleID, identityFingerprint, destinationDir string) (string, error) {
 	if api == nil || bundleResourceID == "" || !bundleIDPattern.MatchString(bundleID) || len(identityFingerprint) != 40 {
 		return "", fmt.Errorf("invalid App Store Connect provisioning metadata")
 	}
@@ -145,8 +192,8 @@ func createASCProvisioningProfile(ctx context.Context, api *appStoreConnectClien
 	body := map[string]any{"data": map[string]any{
 		"type": "profiles",
 		"attributes": map[string]any{
-			"name":        "ios-cloud-builder " + bundleID,
-			"profileType": ascAppStoreProfileType,
+			"name":        platform.profileName(bundleID),
+			"profileType": platform.profileType,
 		},
 		"relationships": map[string]any{
 			"bundleId":     map[string]any{"data": map[string]string{"type": "bundleIds", "id": bundleResourceID}},
@@ -161,14 +208,31 @@ func createASCProvisioningProfile(ctx context.Context, api *appStoreConnectClien
 		return "", fmt.Errorf("no created provisioning profile returned by App Store Connect")
 	}
 	var attributes ascProfileAttributes
-	if json.Unmarshal(response.Data.Attributes, &attributes) != nil || attributes.ProfileType != ascAppStoreProfileType {
+	if json.Unmarshal(response.Data.Attributes, &attributes) != nil || attributes.ProfileType != platform.profileType {
 		return "", fmt.Errorf("parse created App Store Connect provisioning profile")
 	}
-	profilePath := filepath.Join(destinationDir, "profile-asc-created.mobileprovision")
+	profilePath := filepath.Join(destinationDir, "profile-asc-created"+platform.profileExtension())
 	if err := writeASCProfileContent(attributes.ProfileContent, profilePath); err != nil {
 		return "", err
 	}
 	return profilePath, nil
+}
+
+// profileExtension is the file extension Apple uses for the platform's profiles.
+func (platform provisioningPlatform) profileExtension() string {
+	if platform.profileType == ascMacAppStoreProfileType {
+		return ".provisionprofile"
+	}
+	return ".mobileprovision"
+}
+
+// profileName names a profile this builder creates. Profile names are unique
+// per team, so the macOS profile of an identifier says so.
+func (platform provisioningPlatform) profileName(bundleID string) string {
+	if platform.profileType == ascMacAppStoreProfileType {
+		return "ios-cloud-builder macOS " + bundleID
+	}
+	return "ios-cloud-builder " + bundleID
 }
 
 func findASCCertificate(ctx context.Context, api *appStoreConnectClient, identityFingerprint string) (string, error) {

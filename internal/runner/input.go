@@ -67,6 +67,16 @@ const (
 	OperationWindowsTest = "windows-test"
 )
 
+// Platforms accepted for platform. ios is the default and the only platform of
+// operations build, test and windows-test. macos is accepted only for
+// operation testflight: its build job runs test_script, which must leave the
+// unsigned application bundle at artifact_path, and its signing job signs that
+// bundle for the Mac App Store and uploads it as an installer package.
+const (
+	PlatformIOS   = "ios"
+	PlatformMacOS = "macos"
+)
+
 // Inputs are the complete set of values accepted from workflow_dispatch.
 type Inputs struct {
 	BuildID           string
@@ -83,6 +93,7 @@ type Inputs struct {
 	ArtifactPath      string
 	TestImage         string
 	BuildXcode        string
+	Platform          string
 }
 
 // Validate rejects values that could widen repository access, escape the
@@ -117,10 +128,26 @@ func (in *Inputs) Validate() error {
 	if err != nil || recipient.String() != in.ArtifactRecipient {
 		return fmt.Errorf("invalid artifact_recipient")
 	}
+	switch in.Platform {
+	case "", PlatformIOS:
+	case PlatformMacOS:
+		if in.Operation != OperationTestFlight {
+			return fmt.Errorf("platform %s is accepted only for operation testflight", PlatformMacOS)
+		}
+		if err := ValidateTestScriptPath(in.TestScript); err != nil {
+			return fmt.Errorf("invalid test_script: %w", err)
+		}
+		if err := ValidateMacOSAppPath(in.ArtifactPath); err != nil {
+			return fmt.Errorf("invalid artifact_path: %w", err)
+		}
+	default:
+		return fmt.Errorf("invalid platform")
+	}
+	macOS := in.Platform == PlatformMacOS
 	switch in.Operation {
 	case OperationBuild, OperationTestFlight:
-		if in.TestScript != "" {
-			return fmt.Errorf("test_script is accepted only for operations test and windows-test")
+		if in.TestScript != "" && !macOS {
+			return fmt.Errorf("test_script is accepted only for operations test and windows-test and platform macos")
 		}
 	case OperationTest:
 		if err := ValidateTestScriptPath(in.TestScript); err != nil {
@@ -156,8 +183,8 @@ func (in *Inputs) Validate() error {
 	default:
 		return fmt.Errorf("invalid build_xcode")
 	}
-	if in.ArtifactPath != "" && in.Operation != OperationWindowsTest {
-		return fmt.Errorf("artifact_path is accepted only for operation windows-test")
+	if in.ArtifactPath != "" && in.Operation != OperationWindowsTest && !macOS {
+		return fmt.Errorf("artifact_path is accepted only for operation windows-test and platform macos")
 	}
 	return nil
 }
@@ -189,6 +216,18 @@ func ValidateWindowsTestScriptPath(value string) error {
 // names a regular file in the checkout.
 func ValidateArtifactPath(value string) error {
 	return validateSnapshotFilePath(value, MaxArtifactPathLength)
+}
+
+// ValidateMacOSAppPath applies ValidateArtifactPath to a macOS deployment's
+// artifact_path and requires it to name an application bundle.
+func ValidateMacOSAppPath(value string) error {
+	if err := ValidateArtifactPath(value); err != nil {
+		return err
+	}
+	if path.Ext(value) != ".app" || path.Base(value) == ".app" {
+		return fmt.Errorf("must name an application bundle ending in .app")
+	}
+	return nil
 }
 
 // IsPowerShellScript reports whether a test script runs under pwsh rather
