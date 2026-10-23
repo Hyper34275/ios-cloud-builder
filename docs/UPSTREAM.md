@@ -11,7 +11,7 @@ This derivative adds a backend/config separation between private source and publ
 The remotes should remain:
 
 ```text
-origin    git@github.com:ori2015/ios-cloud-builder.git
+origin    git@github.com:Hyper34275/ios-cloud-builder.git
 upstream  https://github.com/MobAI-App/ios-builder.git
 ```
 

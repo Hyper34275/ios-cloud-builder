@@ -20,20 +20,20 @@ import (
 // TestArtifactValidationMatchesConfig: both sides must agree.
 var (
 	goodArtifactPaths = []string{
-		"dist/EntrixSetup.exe",
-		"EntrixSetup.exe",
+		"dist/AppSetup.exe",
+		"AppSetup.exe",
 		"out/Release/x64/App+Tools_1.2.3.msi",
 		".artifacts/setup.zip",
 		strings.Repeat("a", MaxArtifactPathLength),
 	}
 	hostileArtifactPaths = append([]string{
-		"dist/../../EntrixSetup.exe",
-		`dist\EntrixSetup.exe`,
+		"dist/../../AppSetup.exe",
+		`dist\AppSetup.exe`,
 		"D:/a/_temp/private-output/test.log",
-		"dist/EntrixSetup.exe:Zone.Identifier",
-		"dist/Entrix Setup.exe",
-		"dist/ENTRIX~1.EXE",
-		"dist/EntrixSetup.exe.",
+		"dist/AppSetup.exe:Zone.Identifier",
+		"dist/App Setup.exe",
+		"dist/APPSET~1.EXE",
+		"dist/AppSetup.exe.",
 		".git/objects/pack/pack.idx",
 		"--output=dist/x.exe",
 		"dist/$(whoami).exe",
@@ -76,7 +76,7 @@ func TestInputsValidateWindowsTestOperation(t *testing.T) {
 	in := validInputs(t)
 	in.Operation = OperationWindowsTest
 	in.TestScript = "scripts/windows-test.ps1"
-	in.ArtifactPath = "dist/EntrixSetup.exe"
+	in.ArtifactPath = "dist/AppSetup.exe"
 	// The workflow defaults of the iOS-only inputs are accepted as they are.
 	in.IOSPath, in.Scheme, in.Configuration, in.FrameworkHint = ".", "", "Release", FrameworkAuto
 	if err := in.Validate(); err != nil {
@@ -335,11 +335,11 @@ func TestRunTestsTimeoutStopsTheWholeProcessTree(t *testing.T) {
 
 const artifactContents = "MZ-fake-installer-bytes"
 
-// artifactScript writes dist/EntrixSetup.exe unless skip, then exits.
+// artifactScript writes dist/AppSetup.exe unless skip, then exits.
 func artifactScript(exitCode int, write bool) string {
 	script := "New-Item -ItemType Directory -Force -Path dist | Out-Null\n"
 	if write {
-		script += "[IO.File]::WriteAllText((Join-Path $env:BUILDER_SOURCE_DIR 'dist/EntrixSetup.exe'), '" + artifactContents + "')\n"
+		script += "[IO.File]::WriteAllText((Join-Path $env:BUILDER_SOURCE_DIR 'dist/AppSetup.exe'), '" + artifactContents + "')\n"
 	}
 	script += "Set-Content -LiteralPath (Join-Path $env:BUILDER_REPORT_DIR 'report.md') -Value '# Windows tests'\n"
 	return script + fmt.Sprintf("Write-Output 'private-windows-output'\nexit %d\n", exitCode)
@@ -354,15 +354,15 @@ func TestExecuteTestsSecureEncryptsArtifactOnlyAfterAPass(t *testing.T) {
 		wantMembers string
 		wantNote    string
 	}{
-		{"pass with artifact", artifactScript(0, true), nil, "artifact.age,report.md.age,test.log.age", "The artifact dist/EntrixSetup.exe (23 bytes) was encrypted."},
-		{"failure with artifact", artifactScript(1, true), ErrTestsFailed, "report.md.age,test.log.age", "The tests did not pass, so the artifact dist/EntrixSetup.exe was not encrypted or uploaded."},
+		{"pass with artifact", artifactScript(0, true), nil, "artifact.age,report.md.age,test.log.age", "The artifact dist/AppSetup.exe (23 bytes) was encrypted."},
+		{"failure with artifact", artifactScript(1, true), ErrTestsFailed, "report.md.age,test.log.age", "The tests did not pass, so the artifact dist/AppSetup.exe was not encrypted or uploaded."},
 		{"pass without artifact", artifactScript(0, false), ErrTestsFailed, "report.md.age,test.log.age", "is unusable (artifact does not exist in the snapshot), so the run failed."},
-		{"pass with a directory as artifact", "New-Item -ItemType Directory -Force -Path dist/EntrixSetup.exe | Out-Null\nexit 0\n", ErrTestsFailed, "test.log.age", "artifact is not a regular file"},
-		{"pass with an empty artifact", "New-Item -ItemType Directory -Force -Path dist | Out-Null\nNew-Item -ItemType File -Path dist/EntrixSetup.exe | Out-Null\nexit 0\n", ErrTestsFailed, "test.log.age", "artifact is empty"},
+		{"pass with a directory as artifact", "New-Item -ItemType Directory -Force -Path dist/AppSetup.exe | Out-Null\nexit 0\n", ErrTestsFailed, "test.log.age", "artifact is not a regular file"},
+		{"pass with an empty artifact", "New-Item -ItemType Directory -Force -Path dist | Out-Null\nNew-Item -ItemType File -Path dist/AppSetup.exe | Out-Null\nexit 0\n", ErrTestsFailed, "test.log.age", "artifact is empty"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			checkout, options := newPwshCheckout(t, test.script)
-			options.Artifact = "dist/EntrixSetup.exe"
+			options.Artifact = "dist/AppSetup.exe"
 			err := ExecuteTestsSecure(context.Background(), options, checkout.identity.Recipient().String(), checkout.encrypted)
 			if !errors.Is(err, test.wantErr) || (test.wantErr == nil && err != nil) {
 				t.Fatalf("ExecuteTestsSecure() error = %v, want %v", err, test.wantErr)

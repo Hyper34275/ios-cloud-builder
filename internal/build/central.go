@@ -27,11 +27,14 @@ import (
 const (
 	centralArtifactPrefix = "ios-builder-"
 	centralDeployPrefix   = "ios-builder-deploy-"
-	centralIPAFile        = "App.ipa.age"
-	centralLogFile        = "build.log.age"
-	centralTestLogFile    = "test.log.age"
-	centralReportFile     = "report.md.age"
-	centralArtifactFile   = "artifact.age"
+	// centralBuildNumberPrefix names the sealed TestFlight build number the
+	// build job hands to the signing job.
+	centralBuildNumberPrefix = "ios-builder-build-number-"
+	centralIPAFile           = "App.ipa.age"
+	centralLogFile           = "build.log.age"
+	centralTestLogFile       = "test.log.age"
+	centralReportFile        = "report.md.age"
+	centralArtifactFile      = "artifact.age"
 	// centralInstallerFile is a Mac installer identity created by a macOS
 	// deployment, encrypted to the caller like the diagnostic log.
 	centralInstallerFile = "mac-installer-identity.json.age"
@@ -113,6 +116,9 @@ func (c *Coordinator) buildCentral(parent context.Context, opts BuildOptions) (*
 	defer c.deleteCentralArtifact(owner, repo, baseArtifact.ID)
 	artifact := baseArtifact
 	if opts.TestFlight {
+		if sealed, findErr := c.github.FindArtifactByName(ctx, owner, repo, run.ID, centralBuildNumberPrefix+buildID); findErr == nil {
+			defer c.deleteCentralArtifact(owner, repo, sealed.ID)
+		}
 		deployName := centralDeployPrefix + buildID
 		if run.Conclusion == "success" {
 			artifact, err = c.github.PollForRunArtifact(ctx, owner, repo, run.ID, deployName, artifactIndexTimeout)
@@ -194,7 +200,34 @@ func (c *Coordinator) buildCentral(parent context.Context, opts BuildOptions) (*
 // complete, reporting progress under phase. Before it returns, the snapshot
 // ref is deleted and a run that did not complete is cancelled. The returned
 // run is non-nil once the run has started, even alongside an error.
+// verifySourceRepositoryPrivate refuses to push a snapshot anywhere public.
+// The snapshot holds the whole working tree, uncommitted and untracked files
+// included, and a commit pushed to a public repository stays fetchable by SHA
+// after its ref is deleted.
+func (c *Coordinator) verifySourceRepositoryPrivate(ctx context.Context) error {
+	source, builder := c.config.GitHub, c.config.Builder
+	if strings.EqualFold(source.Owner, builder.Owner) && strings.EqualFold(source.Repo, builder.Repo) {
+		return errors.New("github in builder.json names the public builder repository; it must name the private source repository")
+	}
+	repository, err := c.github.GetRepository(ctx, source.Owner, source.Repo)
+	if err != nil {
+		return fmt.Errorf("check that the source repository is private: %w", err)
+	}
+	return requirePrivateRepository(source, repository)
+}
+
+func requirePrivateRepository(source config.GitHubConfig, repository *github.Repository) error {
+	if repository == nil || !repository.Private {
+		return fmt.Errorf("refusing to push a working-tree snapshot to %s/%s: the repository is public", source.Owner, source.Repo)
+	}
+	return nil
+}
+
 func (c *Coordinator) awaitCentralRun(ctx context.Context, remote, buildID string, inputs map[string]string, timeout time.Duration, phase Phase, running string) (*github.WorkflowRun, error) {
+	if err := c.verifySourceRepositoryPrivate(ctx); err != nil {
+		c.progress.Error(PhaseSnapshot, err)
+		return nil, err
+	}
 	c.progress.Update(PhaseSnapshot, "Snapshotting working tree...")
 	sha, err := snapshot.Create(ctx, fmt.Sprintf("ios-builder snapshot %s", buildID))
 	if err != nil {

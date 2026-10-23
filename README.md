@@ -57,13 +57,13 @@ Builds use the stable `macos-15` runner image and test runs use `macos-26` by de
 From a published release:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/ori2015/ios-cloud-builder/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/Hyper34275/ios-cloud-builder/main/install.sh | bash
 ```
 
 Or build from source with Go 1.24 or newer:
 
 ```bash
-git clone https://github.com/ori2015/ios-cloud-builder.git
+git clone https://github.com/Hyper34275/ios-cloud-builder.git
 cd ios-cloud-builder
 go build -o builder ./cmd/builder
 install -m 0755 builder ~/.local/bin/builder
@@ -141,7 +141,7 @@ Configure these values in `apple-production`:
 
 | Kind | Name | Format |
 |---|---|---|
-| Environment variable | `APPLE_TEAM_ID` | 10-character Apple Team ID |
+| Environment secret | `APPLE_TEAM_ID` | 10-character Apple Team ID (a secret, not a variable: variables are printed in the public log) |
 | Environment secret | `APPLE_SIGNING_AGE_IDENTITY` | dedicated AGE identity |
 | Environment secret | `APPLE_DISTRIBUTION_P12` | base64-encoded `.p12` |
 | Environment secret | `APPLE_DISTRIBUTION_P12_PASSWORD` | `.p12` password |

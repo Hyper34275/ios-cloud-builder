@@ -167,8 +167,14 @@ func runCentralDoctor(cmd *cobra.Command, _ []string) error {
 			return nil
 		}},
 		{"private source API access", func(ctx context.Context) error {
-			_, err := client.GetRepository(ctx, cfg.GitHub.Owner, cfg.GitHub.Repo)
-			return err
+			repository, err := client.GetRepository(ctx, cfg.GitHub.Owner, cfg.GitHub.Repo)
+			if err != nil {
+				return err
+			}
+			if !repository.Private {
+				return errors.New("the source repository is public; snapshots of the working tree would be published")
+			}
+			return nil
 		}},
 		{"public builder API access", func(ctx context.Context) error {
 			var err error
@@ -225,9 +231,14 @@ func runCentralDoctor(cmd *cobra.Command, _ []string) error {
 				}
 				return github.ValidateProductionEnvironment(environment, policies, publicRepository.DefaultRef)
 			}},
-			check{"APPLE_TEAM_ID environment variable", func(ctx context.Context) error {
-				_, err := client.GetEnvironmentActionVariable(ctx, cfg.Builder.Owner, cfg.Builder.Repo, "apple-production", "APPLE_TEAM_ID")
-				return err
+			check{"APPLE_TEAM_ID environment secret", func(ctx context.Context) error {
+				if _, err := client.GetEnvironmentActionSecret(ctx, cfg.Builder.Owner, cfg.Builder.Repo, "apple-production", "APPLE_TEAM_ID"); err != nil {
+					return fmt.Errorf("%w (APPLE_TEAM_ID is a secret, not a variable, so the public log never prints it)", err)
+				}
+				if _, err := client.GetEnvironmentActionVariable(ctx, cfg.Builder.Owner, cfg.Builder.Repo, "apple-production", "APPLE_TEAM_ID"); err == nil {
+					return errors.New("delete the leftover APPLE_TEAM_ID environment variable; the secret replaces it")
+				}
+				return nil
 			}},
 		)
 		for _, name := range []string{
