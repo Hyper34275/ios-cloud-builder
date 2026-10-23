@@ -46,6 +46,13 @@ func TestMaskCommandsSkipGenericValues(t *testing.T) {
 	if err != nil || len(commands) != 0 {
 		t.Errorf("mask commands = %q, %v; want none", commands, err)
 	}
+	multiline := filepath.Join(t.TempDir(), "event.json")
+	if err := os.WriteFile(multiline, []byte(`{"inputs":{"scheme":"First\nSecond"}}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if commands, err := runner.MaskCommands(multiline); err != nil || !reflect.DeepEqual(commands, []string{"::add-mask::First", "::add-mask::Second"}) {
+		t.Errorf("multi-line value masks = %q, %v; want each line masked", commands, err)
+	}
 	if _, err := runner.MaskCommands(filepath.Join(t.TempDir(), "missing.json")); err == nil {
 		t.Error("a missing event file must fail, not leave inputs unmasked")
 	}
@@ -56,28 +63,34 @@ func TestSealedBuildNumberRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	sealed, err := runner.SealBuildNumber("452", identity.Recipient().String())
-	if err != nil {
+	sealedPath := filepath.Join(t.TempDir(), runner.SealedBuildNumberFile)
+	if err := runner.SealBuildNumber("452", identity.Recipient().String(), sealedPath); err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(sealed, "452") && len(sealed) < 10 {
-		t.Fatalf("sealed value looks like plaintext: %q", sealed)
+	if data, _ := os.ReadFile(sealedPath); strings.Contains(string(data), "452") {
+		t.Fatal("sealed file contains the plaintext count")
 	}
-	number, err := runner.UnsealBuildNumber(sealed, "2", identity.String())
+	number, err := runner.UnsealBuildNumber(sealedPath, "2", identity.String())
 	if err != nil || number != "452.2" {
 		t.Fatalf("unsealed %q, %v; want 452.2", number, err)
 	}
 	other, _ := age.GenerateX25519Identity()
-	if _, err := runner.UnsealBuildNumber(sealed, "1", other.String()); err == nil {
+	if _, err := runner.UnsealBuildNumber(sealedPath, "1", other.String()); err == nil {
 		t.Error("a different identity must not unseal the build number")
 	}
 	for _, bad := range []string{"", "0", "12a", "-1"} {
-		if _, err := runner.SealBuildNumber(bad, identity.Recipient().String()); err == nil {
+		if err := runner.SealBuildNumber(bad, identity.Recipient().String(), sealedPath); err == nil {
 			t.Errorf("SealBuildNumber(%q) succeeded", bad)
 		}
 	}
-	if _, err := runner.UnsealBuildNumber(sealed, "0", identity.String()); err == nil {
+	if err := runner.SealBuildNumber("1", identity.Recipient().String(), filepath.Join(t.TempDir(), "other.age")); err == nil {
+		t.Error("an unexpected output name must be rejected")
+	}
+	if _, err := runner.UnsealBuildNumber(sealedPath, "0", identity.String()); err == nil {
 		t.Error("attempt 0 must be rejected")
+	}
+	if _, err := runner.UnsealBuildNumber(filepath.Join(t.TempDir(), "missing.age"), "1", identity.String()); err == nil {
+		t.Error("a missing sealed file must be rejected")
 	}
 }
 
@@ -131,10 +144,10 @@ func TestCentralWorkflowPrintsNoPlainVariablesOrCounts(t *testing.T) {
 				}
 			}
 		}
-		for name, value := range job.Outputs {
-			if name != "sealed_build_number" || !strings.Contains(value, "outputs.sealed_build_number") {
-				t.Errorf("%s output %s=%s is not sealed", jobName, name, value)
-			}
+		// GitHub drops a job output that happens to contain a masked value,
+		// and outputs are not encrypted; data crosses jobs as artifacts.
+		if len(job.Outputs) != 0 {
+			t.Errorf("%s has job outputs %v", jobName, job.Outputs)
 		}
 	}
 }

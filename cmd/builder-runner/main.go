@@ -58,7 +58,7 @@ func deployTestFlight(args []string) error {
 	flags.StringVar(&options.EncryptedIPAPath, "encrypted-ipa", "", "")
 	flags.StringVar(&options.LogPath, "log", "", "")
 	flags.StringVar(&options.BuildNumber, "build-number", "", "")
-	flags.StringVar(&sealedBuildNumber, "sealed-build-number", "", "")
+	flags.StringVar(&sealedBuildNumber, "sealed-build-number-file", "", "")
 	flags.StringVar(&buildAttempt, "build-attempt", "", "")
 	flags.StringVar(&options.Platform, "platform", runner.PlatformIOS, "")
 	flags.StringVar(&recipient, "recipient", "", "")
@@ -69,7 +69,7 @@ func deployTestFlight(args []string) error {
 	if sealedBuildNumber != "" {
 		number, err := runner.UnsealBuildNumber(sealedBuildNumber, buildAttempt, os.Getenv("APPLE_SIGNING_AGE_IDENTITY"))
 		if err != nil {
-			return fmt.Errorf("invalid sealed TestFlight build number")
+			return fmt.Errorf("the sealed TestFlight build number is missing or invalid")
 		}
 		options.BuildNumber = number
 	}
@@ -103,22 +103,22 @@ func maskInputs() error {
 	return nil
 }
 
-// sealBuildNumber prints the BUILD_COUNT environment value, encrypted to the
-// signing recipient, as a sealed_build_number step output line.
+// sealBuildNumber writes the BUILD_COUNT environment value, encrypted to the
+// signing recipient, to the --output file. It prints only a fixed line.
 func sealBuildNumber(args []string) error {
 	flags := newFlags("seal-build-number")
-	var recipient string
+	var recipient, output string
 	flags.StringVar(&recipient, "recipient", "", "")
+	flags.StringVar(&output, "output", "", "")
 	if err := flags.Parse(args); err != nil || flags.NArg() != 0 {
 		return fmt.Errorf("invalid build number sealing arguments")
 	}
 	count := os.Getenv("BUILD_COUNT")
 	_ = os.Unsetenv("BUILD_COUNT")
-	sealed, err := runner.SealBuildNumber(count, recipient)
-	if err != nil {
+	if err := runner.SealBuildNumber(count, recipient, output); err != nil {
 		return fmt.Errorf("build number could not be sealed")
 	}
-	fmt.Printf("sealed_build_number=%s\n", sealed)
+	fmt.Println("TestFlight build number sealed for the signing job")
 	return nil
 }
 
