@@ -85,17 +85,17 @@ func TestResolveArtifactPath(t *testing.T) {
 		config, want  string
 		wantErrSubstr string
 	}{
-		{name: "config", config: "dist/EntrixSetup.exe", want: "dist/EntrixSetup.exe"},
-		{name: "flag overrides config", flag: "out/Setup.msi", flagSet: true, config: "dist/EntrixSetup.exe", want: "out/Setup.msi"},
-		{name: "flag is normalized", flag: "./dist//EntrixSetup.exe", flagSet: true, want: "dist/EntrixSetup.exe"},
-		{name: "absolute flag", flag: filepath.Join(repo, "dist", "EntrixSetup.exe"), flagSet: true, want: "dist/EntrixSetup.exe"},
-		{name: "empty flag disables the configured artifact", flag: "", flagSet: true, config: "dist/EntrixSetup.exe", want: ""},
+		{name: "config", config: "dist/AppSetup.exe", want: "dist/AppSetup.exe"},
+		{name: "flag overrides config", flag: "out/Setup.msi", flagSet: true, config: "dist/AppSetup.exe", want: "out/Setup.msi"},
+		{name: "flag is normalized", flag: "./dist//AppSetup.exe", flagSet: true, want: "dist/AppSetup.exe"},
+		{name: "absolute flag", flag: filepath.Join(repo, "dist", "AppSetup.exe"), flagSet: true, want: "dist/AppSetup.exe"},
+		{name: "empty flag disables the configured artifact", flag: "", flagSet: true, config: "dist/AppSetup.exe", want: ""},
 		{name: "none", want: ""},
 		{name: "need not exist yet", config: "dist/not-built-yet.exe", want: "dist/not-built-yet.exe"},
-		{name: "traversal", flag: "../EntrixSetup.exe", flagSet: true, wantErrSubstr: "inside the repository"},
-		{name: "space", config: "dist/Entrix Setup.exe", wantErrSubstr: "windows.artifact in builder.json may contain only"},
+		{name: "traversal", flag: "../AppSetup.exe", flagSet: true, wantErrSubstr: "inside the repository"},
+		{name: "space", config: "dist/App Setup.exe", wantErrSubstr: "windows.artifact in builder.json may contain only"},
 		{name: "git metadata", flag: ".git/config", flagSet: true, wantErrSubstr: "Git metadata"},
-		{name: "alternate data stream", flag: "dist/EntrixSetup.exe:x", flagSet: true, wantErrSubstr: "may contain only"},
+		{name: "alternate data stream", flag: "dist/AppSetup.exe:x", flagSet: true, wantErrSubstr: "may contain only"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			got, err := resolveArtifactPath(test.flag, test.flagSet, test.config, repo)
@@ -126,8 +126,8 @@ func TestWarnIfArtifactWouldBeSnapshotted(t *testing.T) {
 		output, artifact string
 		warn             bool
 	}{
-		{"dist", "dist/EntrixSetup.exe", false},           // ignored
-		{"out", "dist/EntrixSetup.exe", true},             // out/EntrixSetup.exe is not ignored
+		{"dist", "dist/AppSetup.exe", false},              // ignored
+		{"out", "dist/AppSetup.exe", true},                // out/AppSetup.exe is not ignored
 		{filepath.Join(t.TempDir(), "x"), "a.exe", false}, // outside the repository
 		{"out", "", false},                                // no artifact
 	} {

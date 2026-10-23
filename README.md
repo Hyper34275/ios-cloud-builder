@@ -57,13 +57,13 @@ Builds use the stable `macos-15` runner image and test runs use `macos-26` by de
 From a published release:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/ori2015/ios-cloud-builder/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/Hyper34275/ios-cloud-builder/main/install.sh | bash
 ```
 
 Or build from source with Go 1.24 or newer:
 
 ```bash
-git clone https://github.com/ori2015/ios-cloud-builder.git
+git clone https://github.com/Hyper34275/ios-cloud-builder.git
 cd ios-cloud-builder
 go build -o builder ./cmd/builder
 install -m 0755 builder ~/.local/bin/builder

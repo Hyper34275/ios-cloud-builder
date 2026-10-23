@@ -249,9 +249,9 @@ func TestPrintTestResult(t *testing.T) {
 	var kept bytes.Buffer
 	printTestResult(&kept, &build.TestResult{
 		Passed: true, Conclusion: "success", LogPath: "dist/windows-test-id.log", WorkflowURL: "https://github.com/o/r/actions/runs/3",
-		ArtifactPath: "dist/EntrixSetup.exe", ArtifactSize: 160 << 20, RunKept: build.RunKeptOnRequest,
+		ArtifactPath: "dist/AppSetup.exe", ArtifactSize: 160 << 20, RunKept: build.RunKeptOnRequest,
 	})
-	for _, want := range []string{"Tests passed\n", "Artifact: dist/EntrixSetup.exe (160.0 MB)\n", "Workflow: https://github.com/o/r/actions/runs/3 (kept because --keep-run was given)\n"} {
+	for _, want := range []string{"Tests passed\n", "Artifact: dist/AppSetup.exe (160.0 MB)\n", "Workflow: https://github.com/o/r/actions/runs/3 (kept because --keep-run was given)\n"} {
 		if !strings.Contains(kept.String(), want) {
 			t.Errorf("kept output missing %q:\n%s", want, kept.String())
 		}

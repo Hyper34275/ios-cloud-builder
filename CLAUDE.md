@@ -151,6 +151,18 @@ internal/
 - **KMP Has No Hot Reload**: shared Kotlin compiles to a native framework at build time, so
   `dev kmp` only installs, launches and streams output; code changes need `ios build`
 
+## Privacy (public repository)
+
+This repository, its pull requests and its Actions logs are public, and it builds private
+projects. Follow [docs/PRIVACY.md](docs/PRIVACY.md):
+
+- Never put a private project, app, bundle ID, Apple team, script name or local path in
+  code, tests, commit messages or PR text. Use `com.example.*` and other generic names.
+- Commit with the GitHub noreply email.
+- Workflow steps that receive private inputs must come after *Mask private dispatch inputs*.
+  Account identifiers are secrets, never `vars`, and nothing derived from private source is echoed.
+- Run `scripts/privacy-check.sh origin/main` before pushing.
+
 ## Configuration
 
 `builder.json`:

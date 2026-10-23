@@ -415,9 +415,9 @@ func TestConfig_WindowsSection(t *testing.T) {
 	for _, windows := range []WindowsConfig{
 		{},
 		{TestScript: "scripts/windows-test.ps1"},
-		{TestScript: "scripts/Windows-Test.PS1", Artifact: "dist/EntrixSetup.exe"},
+		{TestScript: "scripts/Windows-Test.PS1", Artifact: "dist/AppSetup.exe"},
 		{TestScript: "ci/windows.sh", Artifact: "out/Release/App+Tools_1.2.msi"},
-		{Artifact: "dist/EntrixSetup.exe"},
+		{Artifact: "dist/AppSetup.exe"},
 	} {
 		cfg := base
 		cfg.Windows = windows
@@ -431,8 +431,8 @@ func TestConfig_WindowsSection(t *testing.T) {
 			{TestScript: `scripts\test.ps1`}, {TestScript: ".git/hooks/x.ps1"}, {TestScript: "scripts./test.ps1"},
 		},
 		"windows.artifact": {
-			{Artifact: "../EntrixSetup.exe"}, {Artifact: "/dist/EntrixSetup.exe"}, {Artifact: `dist\EntrixSetup.exe`},
-			{Artifact: "dist/Entrix Setup.exe"}, {Artifact: "dist/EntrixSetup.exe."}, {Artifact: ".git/config"},
+			{Artifact: "../AppSetup.exe"}, {Artifact: "/dist/AppSetup.exe"}, {Artifact: `dist\AppSetup.exe`},
+			{Artifact: "dist/App Setup.exe"}, {Artifact: "dist/AppSetup.exe."}, {Artifact: ".git/config"},
 			{Artifact: "dist/Setup.exe:stream"},
 		},
 	} {
@@ -477,21 +477,21 @@ func TestManager_WindowsSectionIsBackwardsCompatible(t *testing.T) {
   "project": "App",
   "platform": "ios",
   "github": {"owner": "owner", "repo": "repo"},
-  "windows": {"testScript": "scripts/windows-test.ps1", "artifact": "dist/EntrixSetup.exe", "futureKey": true},
+  "windows": {"testScript": "scripts/windows-test.ps1", "artifact": "dist/AppSetup.exe", "futureKey": true},
   "android": {"gradle": "app"}
 }`)
 	cfg, err = mgr.Load()
 	if err != nil || cfg.Validate() != nil {
 		t.Fatalf("Load(windows section) = %+v, %v", cfg, err)
 	}
-	if cfg.Windows != (WindowsConfig{TestScript: "scripts/windows-test.ps1", Artifact: "dist/EntrixSetup.exe"}) {
+	if cfg.Windows != (WindowsConfig{TestScript: "scripts/windows-test.ps1", Artifact: "dist/AppSetup.exe"}) {
 		t.Fatalf("Windows = %+v", cfg.Windows)
 	}
 	if err := mgr.Save(cfg); err != nil {
 		t.Fatal(err)
 	}
 	data, err := os.ReadFile(path)
-	if err != nil || !bytes.Contains(data, []byte(`"testScript": "scripts/windows-test.ps1"`)) || !bytes.Contains(data, []byte(`"artifact": "dist/EntrixSetup.exe"`)) {
+	if err != nil || !bytes.Contains(data, []byte(`"testScript": "scripts/windows-test.ps1"`)) || !bytes.Contains(data, []byte(`"artifact": "dist/AppSetup.exe"`)) {
 		t.Fatalf("saved builder.json = %s, %v", data, err)
 	}
 }

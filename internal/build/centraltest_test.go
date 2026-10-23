@@ -146,7 +146,7 @@ func (h *finishHarness) archive(t *testing.T, members map[string]string) []byte 
 	return makeZIP(t, files)
 }
 
-var windowsArtifactOptions = TestOptions{Platform: PlatformWindows, Script: "scripts/windows-test.ps1", Artifact: "dist/EntrixSetup.exe"}
+var windowsArtifactOptions = TestOptions{Platform: PlatformWindows, Script: "scripts/windows-test.ps1", Artifact: "dist/AppSetup.exe"}
 
 func TestFinishTestDeletesTheRunOnlyAfterAPass(t *testing.T) {
 	t.Run("ios pass", func(t *testing.T) {
@@ -175,7 +175,7 @@ func TestFinishTestDeletesTheRunOnlyAfterAPass(t *testing.T) {
 		if err != nil || !result.Passed || !result.RunDeleted {
 			t.Fatalf("result = %+v, %v", result, err)
 		}
-		if result.ArtifactPath != filepath.Join(h.output, "EntrixSetup.exe") || result.ArtifactSize != int64(len("MZ-installer")) {
+		if result.ArtifactPath != filepath.Join(h.output, "AppSetup.exe") || result.ArtifactSize != int64(len("MZ-installer")) {
 			t.Fatalf("artifact = %q (%d bytes)", result.ArtifactPath, result.ArtifactSize)
 		}
 		if got := readFile(t, result.ArtifactPath); got != "MZ-installer" {
@@ -281,7 +281,7 @@ func TestFinishTestKeepsTheRunWhenAnythingFailed(t *testing.T) {
 			if result.RunDeleted || result.ArtifactPath != "" {
 				t.Fatalf("result = %+v", result)
 			}
-			if _, err := os.Stat(filepath.Join(h.output, "EntrixSetup.exe")); !os.IsNotExist(err) {
+			if _, err := os.Stat(filepath.Join(h.output, "AppSetup.exe")); !os.IsNotExist(err) {
 				t.Fatal("an artifact was written for a run that did not pass")
 			}
 			assertNoDownloadLeftovers(t, h.output)
@@ -412,7 +412,7 @@ func TestTestArtifactMembersAllowArtifactOnlyForWindows(t *testing.T) {
 		t.Fatalf("testArtifactMembers(windows) = %v, %v", members, err)
 	}
 	for name, files := range map[string]map[string][]byte{
-		"plaintext exe":   {centralTestLogFile: []byte("c"), "EntrixSetup.exe": []byte("MZ")},
+		"plaintext exe":   {centralTestLogFile: []byte("c"), "AppSetup.exe": []byte("MZ")},
 		"nested artifact": {centralTestLogFile: []byte("c"), "dist/" + centralArtifactFile: []byte("c")},
 		"no log":          {centralArtifactFile: []byte("c")},
 	} {
@@ -437,9 +437,9 @@ func TestCentralWindowsTestDispatchInputs(t *testing.T) {
 		"artifact_recipient": "age1example",
 		"operation":          "windows-test",
 		"test_script":        "scripts/windows-test.ps1",
-		"artifact_path":      "dist/EntrixSetup.exe",
+		"artifact_path":      "dist/AppSetup.exe",
 	}
-	got := centralWindowsTestDispatchInputs(cfg, finishBuildID, want["snapshot_ref"], "scripts/windows-test.ps1", "dist/EntrixSetup.exe")
+	got := centralWindowsTestDispatchInputs(cfg, finishBuildID, want["snapshot_ref"], "scripts/windows-test.ps1", "dist/AppSetup.exe")
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("centralWindowsTestDispatchInputs() = %#v, want %#v", got, want)
 	}
@@ -453,7 +453,7 @@ func TestTestValidatesPlatformOptions(t *testing.T) {
 	for name, opts := range map[string]TestOptions{
 		"windows .cmd script":      {Platform: PlatformWindows, Script: "scripts/test.cmd"},
 		"windows hostile script":   {Platform: PlatformWindows, Script: "../test.ps1"},
-		"windows hostile artifact": {Platform: PlatformWindows, Script: "scripts/test.ps1", Artifact: "../EntrixSetup.exe"},
+		"windows hostile artifact": {Platform: PlatformWindows, Script: "scripts/test.ps1", Artifact: "../AppSetup.exe"},
 		"ios artifact":             {Platform: PlatformIOS, Script: "scripts/test.sh", Artifact: "dist/App.ipa"},
 		"unknown platform":         {Platform: "android", Script: "scripts/test.sh"},
 	} {

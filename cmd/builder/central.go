@@ -167,8 +167,14 @@ func runCentralDoctor(cmd *cobra.Command, _ []string) error {
 			return nil
 		}},
 		{"private source API access", func(ctx context.Context) error {
-			_, err := client.GetRepository(ctx, cfg.GitHub.Owner, cfg.GitHub.Repo)
-			return err
+			repository, err := client.GetRepository(ctx, cfg.GitHub.Owner, cfg.GitHub.Repo)
+			if err != nil {
+				return err
+			}
+			if !repository.Private {
+				return errors.New("the source repository is public; snapshots of the working tree would be published")
+			}
+			return nil
 		}},
 		{"public builder API access", func(ctx context.Context) error {
 			var err error

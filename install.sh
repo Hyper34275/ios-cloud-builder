@@ -1,7 +1,7 @@
 #!/bin/bash
 set -e
 
-REPO="ori2015/ios-cloud-builder"
+REPO="Hyper34275/ios-cloud-builder"
 BINARY="builder"
 INSTALL_DIR="/usr/local/bin"
 
@@ -47,7 +47,7 @@ echo "Downloading $BINARY-$OS-$ARCH..."
 TMP_FILE=$(mktemp)
 
 # Download
-if ! curl -sL "$DOWNLOAD_URL" -o "$TMP_FILE"; then
+if ! curl -fsSL "$DOWNLOAD_URL" -o "$TMP_FILE"; then
     echo "Download failed"
     exit 1
 fi
@@ -63,7 +63,11 @@ if [ -z "$EXPECTED" ]; then
     echo "Release checksum is missing for $BINARY-$OS-$ARCH"
     exit 1
 fi
-ACTUAL=$(sha256sum "$TMP_FILE" | awk '{print $1}')
+if command -v sha256sum >/dev/null 2>&1; then
+    ACTUAL=$(sha256sum "$TMP_FILE" | awk '{print $1}')
+else
+    ACTUAL=$(shasum -a 256 "$TMP_FILE" | awk '{print $1}')
+fi
 if [ "$ACTUAL" != "$EXPECTED" ]; then
     echo "Checksum verification failed"
     exit 1

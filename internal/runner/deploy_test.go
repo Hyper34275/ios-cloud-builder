@@ -861,9 +861,9 @@ func TestAltoolArgsSupportsTeamAndIndividualKeys(t *testing.T) {
 
 func TestASCBundleIDNameUsesOnlyLettersDigitsAndSpaces(t *testing.T) {
 	cases := map[string]string{
-		"com.KeyoLock.app.watchkitapp": "com KeyoLock app watchkitapp",
-		"com.example.app":              "com example app",
-		"com.example-app.ext_1":        "com example app ext 1",
+		"com.example.watch.watchkitapp": "com example watch watchkitapp",
+		"com.example.app":               "com example app",
+		"com.example-app.ext_1":         "com example app ext 1",
 	}
 	for in, want := range cases {
 		if got := ascBundleIDName(in); got != want {

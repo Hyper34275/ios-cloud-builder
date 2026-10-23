@@ -105,7 +105,7 @@ Pinned Actions reduce tag-retargeting risk. Package managers and private project
 
 ### Metadata disclosure
 
-Public workflow metadata/inputs can expose source owner/repository names, iOS path, scheme, test script path, Windows artifact path, and snapshot ref even though source contents and outputs are encrypted, until a passing test run is deleted. Do not use this backend when repository identity itself is confidential. An opaque broker would be required to hide that metadata.
+Before any step receives them, each job registers the private dispatch inputs as log masks (`builder-runner mask-inputs`, reading the event file so the masking step never prints them): source owner and repository, iOS path, scheme, test script path, Windows artifact path, and their path components. Step headers and action output then show `***`. The TestFlight commit count crosses from the build job to the signing job only as AGE ciphertext to the signing identity, and `APPLE_TEAM_ID` is an Environment secret. What stays public: the build UUID and snapshot ref, the operation and its fixed choices (configuration, framework hint, Xcode, image, platform), which toolchain setup step ran, pass/fail and timing, and the actor. Masking covers logs only, and a value shorter than three characters or a generic one such as `ios` is not masked. Treat dispatch inputs as visible to repository administrators; an opaque broker would be required to hide them completely. See [PRIVACY.md](PRIVACY.md) for the rules that keep new changes from reintroducing a leak.
 
 ## Explicit non-goals
 

@@ -345,12 +345,12 @@ func TestValidateInputsAcceptsTheWindowsJobArguments(t *testing.T) {
 		args     []string
 		wantCode int
 	}{
-		{"windows test with artifact", arguments("windows-test", "scripts/windows-test.ps1", "dist/EntrixSetup.exe"), 0},
+		{"windows test with artifact", arguments("windows-test", "scripts/windows-test.ps1", "dist/AppSetup.exe"), 0},
 		{"windows test without artifact", arguments("windows-test", "scripts/windows-test.ps1", ""), 0},
 		{"windows test with a cmd script", arguments("windows-test", "scripts/windows-test.cmd", ""), 1},
 		{"hostile artifact", arguments("windows-test", "scripts/windows-test.ps1", "../PRIVATE-PATH.exe"), 1},
-		{"artifact on a build", arguments("build", "", "dist/EntrixSetup.exe"), 1},
-		{"artifact on an iOS test", arguments("test", "scripts/test.sh", "dist/EntrixSetup.exe"), 1},
+		{"artifact on a build", arguments("build", "", "dist/AppSetup.exe"), 1},
+		{"artifact on an iOS test", arguments("test", "scripts/test.sh", "dist/AppSetup.exe"), 1},
 		{"iOS test on the default image", append(arguments("test", "scripts/test.sh", ""), "--test-image=macos-26"), 0},
 		{"iOS test on xcode-27", append(arguments("test", "scripts/test.sh", ""), "--test-image=xcode-27"), 0},
 		{"iOS test on a paid xlarge image", append(arguments("test", "scripts/test.sh", ""), "--test-image=xcode-27-xlarge"), 1},

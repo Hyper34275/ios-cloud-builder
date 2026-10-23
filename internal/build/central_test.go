@@ -16,6 +16,7 @@ import (
 
 	"filippo.io/age"
 	"github.com/MobAI-App/ios-builder/internal/config"
+	"github.com/MobAI-App/ios-builder/internal/github"
 )
 
 func TestCentralDispatchInputs(t *testing.T) {
@@ -303,4 +304,27 @@ func makeZIP(t *testing.T, files map[string][]byte) []byte {
 		t.Fatal(err)
 	}
 	return buffer.Bytes()
+}
+
+func TestSnapshotsGoOnlyToPrivateSourceRepositories(t *testing.T) {
+	cfg := &config.Config{
+		Project: "App",
+		Backend: config.BackendCentral,
+		GitHub:  config.GitHubConfig{Owner: "Builder", Repo: "Public"},
+		Builder: config.BuilderConfig{Owner: "builder", Repo: "public", Workflow: "ios-build.yml"},
+	}
+	coordinator := NewCoordinatorWithOutput(cfg, nil, io.Discard)
+	if err := coordinator.verifySourceRepositoryPrivate(context.Background()); err == nil || !strings.Contains(err.Error(), "public builder repository") {
+		t.Fatalf("source naming the builder repository: error = %v", err)
+	}
+	source := config.GitHubConfig{Owner: "source", Repo: "app"}
+	if err := requirePrivateRepository(source, &github.Repository{Private: false}); err == nil || !strings.Contains(err.Error(), "is public") {
+		t.Fatalf("public source repository: error = %v", err)
+	}
+	if err := requirePrivateRepository(source, nil); err == nil {
+		t.Fatal("an unknown repository must be refused")
+	}
+	if err := requirePrivateRepository(source, &github.Repository{Private: true}); err != nil {
+		t.Fatalf("private source repository: error = %v", err)
+	}
 }

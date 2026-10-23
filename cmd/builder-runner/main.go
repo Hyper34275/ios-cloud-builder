@@ -42,6 +42,10 @@ func run(args []string) error {
 		return executeTests(args[1:])
 	case "deploy-testflight":
 		return deployTestFlight(args[1:])
+	case "mask-inputs":
+		return maskInputs()
+	case "seal-build-number":
+		return sealBuildNumber(args[1:])
 	default:
 		return fmt.Errorf("unknown builder-runner subcommand")
 	}
@@ -50,15 +54,24 @@ func run(args []string) error {
 func deployTestFlight(args []string) error {
 	flags := newFlags("deploy-testflight")
 	var options runner.TestFlightOptions
-	var recipient, outputDir string
+	var recipient, outputDir, sealedBuildNumber, buildAttempt string
 	flags.StringVar(&options.EncryptedIPAPath, "encrypted-ipa", "", "")
 	flags.StringVar(&options.LogPath, "log", "", "")
 	flags.StringVar(&options.BuildNumber, "build-number", "", "")
+	flags.StringVar(&sealedBuildNumber, "sealed-build-number", "", "")
+	flags.StringVar(&buildAttempt, "build-attempt", "", "")
 	flags.StringVar(&options.Platform, "platform", runner.PlatformIOS, "")
 	flags.StringVar(&recipient, "recipient", "", "")
 	flags.StringVar(&outputDir, "output", "", "")
 	if err := flags.Parse(args); err != nil || flags.NArg() != 0 {
 		return fmt.Errorf("invalid TestFlight deployment arguments")
+	}
+	if sealedBuildNumber != "" {
+		number, err := runner.UnsealBuildNumber(sealedBuildNumber, buildAttempt, os.Getenv("APPLE_SIGNING_AGE_IDENTITY"))
+		if err != nil {
+			return fmt.Errorf("invalid sealed TestFlight build number")
+		}
+		options.BuildNumber = number
 	}
 	if options.Platform == runner.PlatformMacOS {
 		fmt.Println("Signing and uploading macOS application; detailed output is private")
@@ -72,6 +85,40 @@ func deployTestFlight(args []string) error {
 		return fmt.Errorf("secure TestFlight deployment preparation failed")
 	}
 	fmt.Println("App Store Connect accepted the upload; encrypted diagnostics are ready")
+	return nil
+}
+
+// maskInputs registers the private dispatch inputs as log masks before any
+// step receives them. It prints only workflow commands, which the runner
+// consumes instead of writing to the public log.
+func maskInputs() error {
+	commands, err := runner.MaskCommands(os.Getenv("GITHUB_EVENT_PATH"))
+	if err != nil {
+		return fmt.Errorf("private inputs could not be masked")
+	}
+	for _, command := range commands {
+		fmt.Println(command)
+	}
+	fmt.Println("Private dispatch inputs masked")
+	return nil
+}
+
+// sealBuildNumber prints the BUILD_COUNT environment value, encrypted to the
+// signing recipient, as a sealed_build_number step output line.
+func sealBuildNumber(args []string) error {
+	flags := newFlags("seal-build-number")
+	var recipient string
+	flags.StringVar(&recipient, "recipient", "", "")
+	if err := flags.Parse(args); err != nil || flags.NArg() != 0 {
+		return fmt.Errorf("invalid build number sealing arguments")
+	}
+	count := os.Getenv("BUILD_COUNT")
+	_ = os.Unsetenv("BUILD_COUNT")
+	sealed, err := runner.SealBuildNumber(count, recipient)
+	if err != nil {
+		return fmt.Errorf("build number could not be sealed")
+	}
+	fmt.Printf("sealed_build_number=%s\n", sealed)
 	return nil
 }
 

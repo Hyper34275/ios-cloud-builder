@@ -110,7 +110,7 @@ jobs:
     runs-on: ${{ inputs.build_xcode == '27.1' && 'xcode-27' || 'macos-15' }}
     timeout-minutes: 45
     outputs:
-      build_number: ${{ steps.build-number.outputs.build_number }}
+      sealed_build_number: ${{ steps.build-number.outputs.sealed_build_number }}
 
     steps:
       - name: Checkout trusted public builder
@@ -130,6 +130,10 @@ jobs:
         run: |
           go mod verify
           go build -trimpath -o "$RUNNER_TEMP/builder-runner" ./cmd/builder-runner
+
+      - name: Mask private dispatch inputs
+        run: |
+          "$RUNNER_TEMP/builder-runner" mask-inputs
 
       - name: Validate all dispatch inputs before credential creation
         env:
@@ -192,8 +196,10 @@ jobs:
 
       - name: Derive TestFlight build number from snapshot history
         id: build-number
+        if: inputs.operation == 'testflight'
         env:
           SOURCE_TOKEN: ${{ steps.source-token.outputs.token }}
+          SIGNING_RECIPIENT: ${{ vars.APPLE_SIGNING_RECIPIENT }}
         run: |
           set -euo pipefail
           HEADER=$(printf 'x-access-token:%s' "$SOURCE_TOKEN" | base64 | tr -d '\n')
@@ -202,10 +208,13 @@ jobs:
             fetch --quiet --unshallow --no-tags origin
           COUNT=$(git -C "$GITHUB_WORKSPACE/source" rev-list --count HEAD)
           case "$COUNT" in
-            ''|*[!0-9]*) echo "error: unusable commit count: $COUNT" >&2; exit 1 ;;
+            ''|*[!0-9]*) echo "error: unusable commit count" >&2; exit 1 ;;
           esac
-          echo "build_number=$COUNT" >> "$GITHUB_OUTPUT"
-          echo "TestFlight build number: $COUNT"
+          # The count is sealed to the signing identity: it reaches the signing
+          # job as ciphertext and never appears in the public log.
+          BUILD_COUNT="$COUNT" "$RUNNER_TEMP/builder-runner" seal-build-number \
+            --recipient "$SIGNING_RECIPIENT" >> "$GITHUB_OUTPUT"
+          echo "TestFlight build number sealed for the signing job"
 
       - name: Revoke private repository token before project code
         if: always() && steps.source-token.outcome == 'success'
@@ -412,7 +421,7 @@ jobs:
           APPLE_DISTRIBUTION_P12_PASSWORD: ${{ secrets.APPLE_DISTRIBUTION_P12_PASSWORD }}
           APPLE_PROVISIONING_PROFILE: ${{ secrets.APPLE_PROVISIONING_PROFILE }}
           APPLE_PROVISIONING_PROFILES: ${{ secrets.APPLE_PROVISIONING_PROFILES }}
-          APPLE_TEAM_ID: ${{ vars.APPLE_TEAM_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
           ASC_API_KEY_P8: ${{ secrets.ASC_API_KEY_P8 }}
           ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
           ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
@@ -420,12 +429,14 @@ jobs:
           MAC_INSTALLER_P12_PASSWORD: ${{ secrets.MAC_INSTALLER_P12_PASSWORD }}
           PLATFORM: ${{ inputs.platform }}
           ARTIFACT_RECIPIENT: ${{ inputs.artifact_recipient }}
-          TESTFLIGHT_BUILD_NUMBER: ${{ needs.build.outputs.build_number }}.${{ github.run_attempt }}
+          SEALED_BUILD_NUMBER: ${{ needs.build.outputs.sealed_build_number }}
+          BUILD_ATTEMPT: ${{ github.run_attempt }}
         run: |
           "$RUNNER_TEMP/builder-runner" deploy-testflight \
             --encrypted-ipa "$RUNNER_TEMP/intermediate/App.ipa.age" \
             --log "$RUNNER_TEMP/deploy-private/build.log" \
-            --build-number "$TESTFLIGHT_BUILD_NUMBER" \
+            --sealed-build-number "$SEALED_BUILD_NUMBER" \
+            --build-attempt "$BUILD_ATTEMPT" \
             --platform "$PLATFORM" \
             --recipient "$ARTIFACT_RECIPIENT" \
             --output "$RUNNER_TEMP/deploy-encrypted"
@@ -483,6 +494,10 @@ jobs:
         run: |
           go mod verify
           go build -trimpath -o "$RUNNER_TEMP/builder-runner" ./cmd/builder-runner
+
+      - name: Mask private dispatch inputs
+        run: |
+          "$RUNNER_TEMP/builder-runner" mask-inputs
 
       - name: Validate all dispatch inputs before credential creation
         env:
@@ -666,6 +681,11 @@ jobs:
           go mod verify
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           go build -trimpath -o "$env:RUNNER_TEMP\builder-runner.exe" ./cmd/builder-runner
+          exit $LASTEXITCODE
+
+      - name: Mask private dispatch inputs
+        run: |
+          & "$env:RUNNER_TEMP\builder-runner.exe" mask-inputs
           exit $LASTEXITCODE
 
       - name: Validate all dispatch inputs before credential creation
